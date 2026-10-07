@@ -1,3 +1,4 @@
 [submodule "ai_engine"]
 	path = ai_engine
 	url = https://github.com/ACE-Step/ACE-Step-1.5.git
+	ignore = untracked
