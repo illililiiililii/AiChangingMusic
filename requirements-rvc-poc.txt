@@ -1,0 +1,19 @@
+# Install torch==2.7.1+cu118 and torchaudio==2.7.1+cu118 first from
+# https://download.pytorch.org/whl/cu118, then install this CLI-only subset.
+numpy>=1.26.4,<2
+scipy>=1.13.1,<2
+librosa>=0.10.2,<0.11
+soundfile>=0.13,<1
+ffmpeg-python>=0.2,<1
+av>=15.1,<16
+praat-parselmouth>=0.4.5,<1
+transformers>=4.49,<4.50
+faiss-cpu>=1.13,<2
+scikit-learn>=1.6,<2
+tensorboard>=2.19
+matplotlib>=3.8.2,<4
+einops>=0.8,<1
+local-attention>=1.11,<2
+PyYAML>=6.0.1
+tqdm>=4.67,<5
+torchfcpe>=0.0.4,<0.1

@@ -1,0 +1,4 @@
+# Python 3.12 voice conversion, Demucs and Whisper environment.
+-r requirements-rvc-poc.txt
+demucs==4.0.1
+faster-whisper==1.2.1

@@ -1,0 +1,15 @@
+# 모델 목록
+
+| 모델 | 용도·제공자 | 출처·설치 | 크기·저장 위치 | 한국어/VRAM/권리 |
+| --- | --- | --- | --- | --- |
+| DiffSingerKR `S_200000.pt` | 음표·길이 조건 한국어 SVS, CODEJIN | [공식 Space 파일](https://huggingface.co/spaces/codejin/diffsingerkr/blob/main/Checkpoint/S_200000.pt), `python scripts/fetch_diffsingerkr.py` | 682,529,563 byte, `external/DiffSingerKR-space/Checkpoint/` | 한글 자소 지원, 입력 ID 음역 65~89. 1660 SUPER와 1060의 6GB GPU에서 11초 추론 확인. 출력 F0가 입력 ID보다 한 옥타브 낮아 보정 필요. 학습 데이터 [CSD는 CC BY-NC-SA 4.0](https://github.com/equal-singer/CSD#6-license)으로 비상업적 연구용. Space MIT 표기만으로 상업 사용 허용 여부 판단 불가 |
+| `vocoder.pts` | 멜 스펙트로그램 → PCM, CODEJIN 배포 | [공식 Space 파일](https://huggingface.co/spaces/codejin/diffsingerkr/blob/main/vocoder.pts), 같은 스크립트 | 55,884,400 byte, `external/DiffSingerKR-space/` | 한국어 특정 없음. 6GB 실행 실측 필요. Space MIT 표기 |
+| RVC HuBERT `pytorch_model.bin` | 입력 발음 특징 추출 | [공식 RVC 가중치 저장소](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/hubert_base), `scripts/fetch_rvc_assets.py` | 189,206,711 byte, `external/RVC/assets/hubert_base/` | [저장소 메타데이터 MIT](https://huggingface.co/lj1995/VoiceConversionWebUI). 모델 카드에는 데이터 출처 설명이 없음 |
+| RVC RMVPE `rmvpe.pt` | 노래·말하기 F0 추출 | [공식 RVC 가중치 저장소](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main), 같은 스크립트 | 181,184,272 byte, `external/RVC/assets/rmvpe/` | GTX 1660 SUPER FP32에서 240개 클립 F0 추출 확인 |
+| RVC v2 32k `f0G32k.pth`, `f0D32k.pth` | 단일 화자 음색 변환 미세 학습 초기 가중치 | [공식 RVC pretrained_v2](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/pretrained_v2), 같은 스크립트 | 73,950,049 / 142,875,703 byte, `external/RVC/assets/pretrained_v2/` | 32k·F0 모델. 공개 저장소 MIT 메타데이터와 음성 원본 사용 허락은 별개 |
+| Whisper base q5_1 | 생성 보컬의 한국어 발음 참고용 ASR, OpenAI 모델의 whisper.cpp 변환본 | 이 PC에 기존 설치된 [Shotcut](https://shotcut.org/download/) 번들 | 59,707,625 byte, `C:/Program Files/Shotcut/share/shotcut/whisper_models/ggml-base-q5_1.bin` | 한국어 다국어 인식 가능. GPU VRAM 불필요한 CPU 평가에만 사용. [원본 Whisper 라이선스 MIT](https://github.com/openai/whisper/blob/main/LICENSE). 프로젝트 설치·배포 대상 아님 |
+| Demucs `htdemucs` | 원곡 보컬·반주 분리, Meta | [공식 코드·가중치 안내](https://github.com/facebookresearch/demucs) / `scripts/download_models.py --demucs` | 84,141,911 byte, `models/torch/hub/checkpoints/` | 언어 무관. GTX 1660 SUPER에서 데모 분리 확인; CUDA OOM 시 CPU 재시도. MIT 코드; 가중치 재배포 안 함 |
+| faster-whisper base | 원곡 한국어/영어 가사 인식, SYSTRAN 변환 | [공식 모델](https://huggingface.co/Systran/faster-whisper-base) / `scripts/download_models.py --whisper` | `model.bin` 145,217,532 byte, `models/faster-whisper-base/` | 한국어/영어 다국어. CPU int8로 실행, GPU VRAM 불필요. 원본 Whisper 및 변환 코드 MIT |
+| Ollama `qwen3.5:4b` | 주제 기반 한국어 개사 초안 | [Ollama 모델 안내](https://ollama.com/library/qwen3.5) / `ollama pull qwen3.5:4b` | 사용자 Ollama 저장소, 이 PC 약 3.3GB | **선택**. 로컬 127.0.0.1 API, 모델별 라이선스는 다운로드 시 확인. 가사 품질·음절 수는 편집·평가 필요 |
+
+모델 파일은 저장소에 포함하지 않습니다. SVS·RVC 모델은 스크립트에서 리비전을 고정하고 SHA-256을 검사합니다. Demucs는 upstream의 모델 캐시 검증을, Whisper는 로컬 디렉터리 설치와 파일 확인을 사용합니다. DiffSingerKR 체크포인트는 학습 데이터 CSD의 비상업 조건 때문에 **비상업적 기술 검증용**입니다. 어떤 공개 모델의 표기도 입력 노래·화자 권리를 대신 허가하지 않습니다.
