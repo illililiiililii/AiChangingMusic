@@ -13,6 +13,7 @@ import soundfile as sf
 from app.core.pipeline import run_stage
 from app.core.project import Project
 from app.lyric_generation.alignment import align
+from app.music_analysis.syllables import estimate_syllables
 from app.mixing.render import render_mix
 
 
@@ -36,6 +37,12 @@ class IntegrationTest(unittest.TestCase):
             score = align("가나", notes)
             self.assertEqual([e["midi"] for e in score["syllables"]], [60, 64])
             self.assertEqual([e["start"] for e in score["syllables"]], [0.1, 0.6])
+            with self.assertRaisesRegex(ValueError, "2음절과 음표 1개"):
+                align("가나", notes[:1])
+            estimated = estimate_syllables(
+                {"segments": [{"words": [{"start": .1, "end": .5, "text": " 가나다"}]}]}, notes)
+            self.assertEqual([unit["syllable"] for unit in estimated], ["가", "나", "다"])
+            self.assertEqual(estimated[0]["note_index"], 0)
             stem = folder / "stem.wav"
             sf.write(stem, vocal[:rate], rate)
             target = folder / "mix.wav"

@@ -187,7 +187,13 @@ class Studio(QMainWindow):
         layout.addWidget(self.structure_label)
         layout.addWidget(QLabel("원곡 가사 인식 결과 (직접 수정 가능)"))
         self.original_text = QPlainTextEdit()
+        self.original_text.setMinimumHeight(100)
         layout.addWidget(self.original_text)
+        layout.addWidget(QLabel("인식 음절 시각 추정 (Whisper 단어 구간 균등 분할, 검토 필요)"))
+        self.original_syllables_table = QTableWidget(0, 4)
+        self.original_syllables_table.setHorizontalHeaderLabels(["음절", "시작", "끝", "대응 음표"])
+        self.original_syllables_table.setMinimumHeight(120)
+        layout.addWidget(self.original_syllables_table)
         layout.addWidget(QLabel("음표 편집: 시작(초) · 끝(초) · MIDI 음정"))
         self.notes_table = QTableWidget(0, 3)
         self.notes_table.setHorizontalHeaderLabels(["시작", "끝", "MIDI"])
@@ -211,7 +217,10 @@ class Studio(QMainWindow):
             button.clicked.connect(lambda checked=False, n=name: self.play_artifact(n))
             previews.addWidget(button)
         layout.addLayout(previews)
-        return page
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        return scroll
 
     def _lyrics_tab(self):
         page, layout = QWidget(), QVBoxLayout()
@@ -405,6 +414,15 @@ class Studio(QMainWindow):
         for row, note in enumerate(notes):
             for column, key in enumerate(("start", "end", "midi")):
                 self.notes_table.setItem(row, column, QTableWidgetItem(str(note[key])))
+        original_units = self.project.analysis.get("original_syllables", [])
+        self.original_syllables_table.setRowCount(len(original_units))
+        for row, unit in enumerate(original_units):
+            values = (unit["syllable"], unit["start"], unit["end"],
+                      "" if unit["note_index"] is None else unit["note_index"] + 1)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.original_syllables_table.setItem(row, column, item)
         events = self.project.analysis.get("alignment", [])
         self.alignment_table.setRowCount(len(events))
         for row, event in enumerate(events):

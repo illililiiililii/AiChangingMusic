@@ -115,7 +115,13 @@ def analyze(project: Project) -> str:
     if not vocal.is_file():
         raise ValueError("보컬 분리를 먼저 실행하세요.")
     from app.music_analysis.melody import analyze_vocal
+    from app.music_analysis.syllables import estimate_syllables
     result = analyze_vocal(vocal)
+    transcription = project.artifact("transcription.json")
+    if transcription.is_file():
+        result["original_syllables"] = estimate_syllables(
+            json.loads(transcription.read_text(encoding="utf-8")), result["notes"])
+        result["syllable_timing_method"] = "Whisper 단어 구간의 균등 분할 추정; 수동 검토 필요"
     project.analysis.update(result)
     project.save()
     _json(project.artifact("analysis.json"), result)
@@ -146,7 +152,10 @@ def generate(project: Project) -> str:
                            notes, project.llm_model)
     project.parody_lyrics = text
     project.save()
-    return f"로컬 AI 개사 생성: {len(text)}글자 (수정 후 정렬 권장)"
+    from app.lyric_generation.alignment import syllables
+    count = len(syllables(text))
+    return (f"로컬 AI 개사 생성: {count}/{len(notes)}음절" +
+            (" (음표 수에 맞게 수정 후 정렬하세요)" if count != len(notes) else " (검토 후 정렬하세요)"))
 
 
 def sing(project: Project) -> str:

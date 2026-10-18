@@ -21,13 +21,19 @@ def generate_lyrics(theme: str, style: str, original: str, notes: list[dict], mo
               f"추정 음표 수: {len(notes)}\n각 음표 길이(초): {durations[:120]}\n"
               f"목표 한글 음절 수: {len(notes)}")
     text = ""
-    for attempt in range(3):
+    for attempt in range(4):
         current_prompt = prompt
         if attempt:
             current_prompt += (f"\n이전 초안: {text}\n이 초안은 {len(syllables(text))}음절입니다. "
                                f"반드시 {len(notes)}개의 한글 음절로 고쳐서 가사만 출력하세요.")
+        if attempt == 3:
+            current_prompt += ("\nJSON 객체 하나만 출력하세요: "
+                               '{"syllables":["한","글",...]}. '
+                               "배열 원소마다 한글 한 음절만 넣으세요. "
+                               f"배열 길이는 정확히 {len(notes)}여야 합니다.")
         payload = json.dumps({"model": model or "qwen3.5:4b", "prompt": current_prompt,
                               "stream": False, "think": False, "keep_alive": 0,
+                              **({"format": "json"} if attempt == 3 else {}),
                               "options": {"temperature": .5, "num_predict": 256}},
                              ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=payload,
@@ -38,8 +44,17 @@ def generate_lyrics(theme: str, style: str, original: str, notes: list[dict], mo
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RuntimeError("로컬 Ollama에 연결하지 못했습니다. Ollama를 실행하고 모델을 설치하세요.") from exc
         raw = result.get("response", "").strip().strip('"“”')
-        candidates = [line.strip().strip('"“”') for line in raw.splitlines() if line.strip()]
-        candidate = next((line for line in candidates if len(syllables(line)) >= 2), "")
+        if attempt == 3:
+            try:
+                units = json.loads(raw)["syllables"]
+                candidate = "".join(units) if isinstance(units, list) and all(
+                    isinstance(unit, str) and len(unit) == 1 and "가" <= unit <= "힣" for unit in units) else ""
+            except (ValueError, KeyError, TypeError):
+                candidate = ""
+        else:
+            candidates = [line.strip().strip('"“”') for line in raw.splitlines() if line.strip()]
+            candidate = next((line for line in candidates if len(syllables(line)) >= 2 and
+                              all(len(unit) == 1 and "가" <= unit <= "힣" for unit in syllables(line))), "")
         if candidate and (not text or abs(len(syllables(candidate)) - len(notes)) < abs(len(syllables(text)) - len(notes))):
             text = candidate
         if len(syllables(text)) == len(notes):
