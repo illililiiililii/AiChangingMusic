@@ -672,6 +672,8 @@ def main() -> int:
         QFontDatabase.addApplicationFont(str(font_file))
     app.setFont(QFont("Malgun Gothic", 10))
     window = Studio()
+    if len(sys.argv) > 1 and Path(sys.argv[1]).is_file():
+        window.load_project(Path(sys.argv[1]))
     window.show()
     return app.exec()
 
