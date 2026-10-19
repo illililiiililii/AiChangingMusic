@@ -2,3 +2,6 @@
 -r requirements-rvc-poc.txt
 demucs==4.0.1
 faster-whisper==1.2.1
+onnxruntime>=1.23,<2
+python-mecab-ko==1.3.7
+hgtk==0.2.1

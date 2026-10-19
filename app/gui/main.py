@@ -360,6 +360,13 @@ class Studio(QMainWindow):
     def _render_tab(self):
         page, layout = QWidget(), QVBoxLayout()
         page.setLayout(layout)
+        engine_row = QHBoxLayout()
+        engine_row.addWidget(QLabel("노래 합성 방식"))
+        self.singing_engine = QComboBox()
+        self.singing_engine.addItem("한국어 발음 우선 (박자에 맞춘 말소리)", "korean_tts")
+        self.singing_engine.addItem("기존 DiffSingerKR (음표 중심)", "diffsinger")
+        engine_row.addWidget(self.singing_engine)
+        layout.addLayout(engine_row)
         grid = QGridLayout()
         self.stage_status = {}
         for i, stage in enumerate(STAGES):
@@ -477,6 +484,7 @@ class Studio(QMainWindow):
         self.index_rate.setValue(self.project.conversion_index_rate)
         self.voice_pitch.setValue(self.project.conversion_pitch_semitones)
         self.voice_protect.setValue(self.project.conversion_protect)
+        self.singing_engine.setCurrentIndex(max(0, self.singing_engine.findData(self.project.singing_engine)))
         self.conversion_source.setCurrentIndex(max(0, self.conversion_source.findData(self.project.conversion_source)))
         self.guide_vocal_edit.setText(self.project.guide_vocal)
         self.vocal_gain.setValue(round(self.project.vocal_gain * 100))
@@ -525,6 +533,9 @@ class Studio(QMainWindow):
         self.refresh_models()
 
     def _sync(self):
+        if self.singing_engine.currentData() != self.project.singing_engine:
+            for stage in ("sing", "sing_segment", "convert", "mix"):
+                self.project.stages.pop(stage, None)
         if self.original_text.toPlainText() != self.project.original_lyrics:
             self.project.analysis.pop("original_syllables", None)
             self.project.analysis.pop("syllable_timing_method", None)
@@ -565,6 +576,7 @@ class Studio(QMainWindow):
         self.project.conversion_protect = self.voice_protect.value()
         self.project.conversion_source = self.conversion_source.currentData()
         self.project.guide_vocal = self.guide_vocal_edit.text().strip()
+        self.project.singing_engine = self.singing_engine.currentData()
         self.project.vocal_gain = self.vocal_gain.value() / 100
         self.project.instrumental_gain = self.instrumental_gain.value() / 100
         self.project.reverb = self.reverb.value() / 100

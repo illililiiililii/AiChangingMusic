@@ -2,6 +2,7 @@
 
 | 모델 | 용도·제공자 | 출처·설치 | 크기·저장 위치 | 한국어/VRAM/권리 |
 | --- | --- | --- | --- | --- |
+| Ppaso TTS v1 | 한국어 발음 기반 보컬 원본, akamotaco | [모델 카드](https://huggingface.co/akamotaco/ppaso-tts-v1), `scripts/fetch_ppaso.ps1` | ONNX 및 발음 사전, `external/ppaso-tts/` | 한국어 문장 TTS. CPU 추론. 모델 카드 Apache 2.0. 문장 발음을 우선하여 노래 음정 표현은 제한적 |
 | DiffSingerKR `S_200000.pt` | 음표·길이 조건 한국어 SVS, CODEJIN | [공식 Space 파일](https://huggingface.co/spaces/codejin/diffsingerkr/blob/main/Checkpoint/S_200000.pt), `python scripts/fetch_diffsingerkr.py` | 682,529,563 byte, `external/DiffSingerKR-space/Checkpoint/` | 한글 자소 지원, 입력 ID 음역 65~89. 1660 SUPER와 1060의 6GB GPU에서 11초 추론 확인. 출력 F0가 입력 ID보다 한 옥타브 낮아 보정 필요. 학습 데이터 [CSD는 CC BY-NC-SA 4.0](https://github.com/equal-singer/CSD#6-license)으로 비상업적 연구용. Space MIT 표기만으로 상업 사용 허용 여부 판단 불가 |
 | `vocoder.pts` | 멜 스펙트로그램 → PCM, CODEJIN 배포 | [공식 Space 파일](https://huggingface.co/spaces/codejin/diffsingerkr/blob/main/vocoder.pts), 같은 스크립트 | 55,884,400 byte, `external/DiffSingerKR-space/` | 한국어 특정 없음. 6GB 실행 실측 필요. Space MIT 표기 |
 | RVC HuBERT `pytorch_model.bin` | 입력 발음 특징 추출 | [공식 RVC 가중치 저장소](https://huggingface.co/lj1995/VoiceConversionWebUI/tree/main/hubert_base), `scripts/fetch_rvc_assets.py` | 189,206,711 byte, `external/RVC/assets/hubert_base/` | [저장소 메타데이터 MIT](https://huggingface.co/lj1995/VoiceConversionWebUI). 모델 카드에는 데이터 출처 설명이 없음 |

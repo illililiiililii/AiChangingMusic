@@ -17,6 +17,7 @@ from app.lyric_generation.alignment import align
 from app.music_analysis.syllables import estimate_syllables
 from app.mixing.render import render_mix
 from scripts.render_singing import phrase_inputs
+from scripts.render_korean_singing import score_lines
 
 
 class IntegrationTest(unittest.TestCase):
@@ -75,6 +76,14 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(notes, [72, 0, 74])
         self.assertAlmostEqual(sum(durations), .5)
         self.assertAlmostEqual(durations[1], .1)
+
+    def test_korean_renderer_uses_edited_lyrics(self):
+        events = [{"syllable": char, "start": index * .3, "end": (index + 1) * .3,
+                   "midi": 60} for index, char in enumerate("바른가사")]
+        lines = score_lines("바른 가사", events)
+        self.assertEqual(lines[0][0], ["바른", "가사"])
+        with self.assertRaisesRegex(ValueError, "가사와 저장된"):
+            score_lines("틀린 가사", events)
 
     def test_recorded_guide_is_used_for_conversion(self):
         with tempfile.TemporaryDirectory() as temporary:

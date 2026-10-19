@@ -20,6 +20,7 @@ def main() -> int:
               "packages": packages, "files": {
         "ffmpeg": (ROOT / "external" / "ffmpeg" / "ffmpeg.exe").is_file() or bool(shutil.which("ffmpeg")),
         "diffsinger": (ROOT / "external" / "DiffSingerKR-space" / "Checkpoint" / "S_200000.pt").is_file(),
+        "korean_tts": (ROOT / "external" / "ppaso-tts" / "onnx" / "vocoder.onnx.data").is_file(),
         "rvc": (ROOT / "external" / "RVC" / "infer" / "cli.py").is_file(),
         "rvc_assets": (ROOT / "external" / "RVC" / "assets" / "hubert_base" / "pytorch_model.bin").is_file(),
         "whisper": (ROOT / "models" / "faster-whisper-base" / "model.bin").is_file(),

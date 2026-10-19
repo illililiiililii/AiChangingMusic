@@ -29,6 +29,7 @@ class Project:
     conversion_protect: float = 0.2
     conversion_source: str = "synth"
     guide_vocal: str = ""
+    singing_engine: str = "korean_tts"
     vocal_gain: float = 1.0
     instrumental_gain: float = 0.8
     reverb: float = 0.08

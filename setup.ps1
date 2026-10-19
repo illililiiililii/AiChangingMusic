@@ -36,6 +36,7 @@ try {
         & $svs scripts\fetch_diffsingerkr.py
         if ($LASTEXITCODE -ne 0) { throw 'DiffSingerKR download failed.' }
     }
+    & (Join-Path $root 'scripts\fetch_ppaso.ps1')
     if (-not (Test-Path 'external\RVC\infer\cli.py')) {
         git clone https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git external\RVC
         if ($LASTEXITCODE -ne 0) { throw 'RVC clone failed. Install Git and retry.' }

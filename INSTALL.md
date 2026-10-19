@@ -7,11 +7,11 @@
 - NVIDIA GPU를 사용할 때 [NVIDIA 드라이버](https://www.nvidia.com/Download/index.aspx): 드라이버 설치는 이 프로젝트가 자동으로 수행하지 않습니다.
 - 약 12GB 이상의 여유 공간과 최초 다운로드를 위한 인터넷.
 
-관리자 권한이나 시스템 Python 변경 없이 프로젝트 내부 `.venv`(Python 3.10), `.venv-rvc`(Python 3.12)를 만듭니다. 설치 스크립트는 Torch CUDA 11.8 휠, Python 패키지, RVC 코드, FFmpeg, DiffSingerKR, RVC 자산, Demucs, faster-whisper 모델을 내려받습니다. 모델 가중치는 Git에 올라가지 않습니다.
+관리자 권한이나 시스템 Python 변경 없이 프로젝트 내부 `.venv`(Python 3.10), `.venv-rvc`(Python 3.12)를 만듭니다. 설치 스크립트는 Torch CUDA 11.8 휠, Python 패키지, RVC 코드, FFmpeg, DiffSingerKR, 한국어 Ppaso TTS, RVC 자산, Demucs, faster-whisper 모델을 내려받습니다. 모델 가중치는 Git에 올라가지 않습니다.
 
 ## 2. 자동 설치
 
-저장소 폴더에서 `setup.bat`을 실행합니다. 오류가 나면 창에 오류가 남습니다. 설치 완료 후 `run.bat`을 실행합니다. PowerShell에서는 다음과 같습니다.
+저장소 폴더에서 `install.bat` 또는 `setup.bat`을 실행합니다. 오류가 나면 창에 오류가 남습니다. 설치 완료 후 `run.bat`을 실행합니다. PowerShell에서는 다음과 같습니다.
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
@@ -39,5 +39,6 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 - **가사나 음정 오류**: 노래 ASR과 음정 추정은 초안입니다. 원곡 탭의 가사·음표 표를 수정한 뒤 정렬부터 재실행합니다.
 - **음성 학습 실패**: `logs/<프로필>-training.log`의 마지막 오류를 확인합니다. 앱의 모든 단계 시작·완료·오류는 `logs/app.log`에 기록됩니다. 10분 이상의 깨끗한 단일 화자 녹음이 필요합니다.
 - **FFmpeg·모델 없음**: `setup.bat`을 다시 실행합니다. 라이선스·다운로드 주소는 [MODELS.md](MODELS.md), [DEPENDENCIES.md](DEPENDENCIES.md)를 보세요.
+- **한국어 발음이 뭉개짐**: 생성·출력 탭에서 **한국어 발음 우선** 합성을 선택하고 노래 합성을 다시 실행합니다. 목소리 탭의 **변환 보컬 음높이**를 `0`으로 시작하여 음색 변환을 다시 실행합니다. 합성된 `singing.wav` 자체를 먼저 들어 보고 음절 시각을 수정하세요.
 
 신규 Windows PC에서 처음부터 설치하는 절차는 아직 별도 기기에서 검증하지 못했습니다. 이 개발 PC에서 설치와 실행, 모델 다운로드 및 로컬 전체 파이프라인을 시험했습니다.

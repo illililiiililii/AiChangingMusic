@@ -24,6 +24,7 @@
 | PyTorch·Torchaudio CUDA 11.8 | RVC CUDA 학습·추론 | [공식 wheel 인덱스](https://download.pytorch.org/whl/cu118) | 두 패키지 모두 2.7.1+cu118 |
 | RVC | 음성 전처리, 화자 학습, 노래 음색 변환 | [공식 GitHub](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) | 커밋 `81eed5e8f68b6bed1789f682fe78cdd324495afc`, MIT, `external/RVC` |
 | FFmpeg·ffprobe | RVC 입력 디코딩 | [FFmpeg 공식 Windows 다운로드 안내](https://ffmpeg.org/download.html), [Gyan 빌드](https://www.gyan.dev/ffmpeg/builds/) | 8.1.2 essentials 정적 빌드, SHA-256 검증, GPLv3, `external/ffmpeg` |
+| Ppaso TTS·ONNX Runtime·Mecab | 한국어 발음 생성과 음표 시각 조정 | [Ppaso 모델](https://huggingface.co/akamotaco/ppaso-tts-v1), [ONNX Runtime](https://onnxruntime.ai/), [python-mecab-ko](https://github.com/jonghwanhyeon/python-mecab-ko) | `external/ppaso-tts`, `.venv-rvc`; 모델 리비전 및 SHA-256 고정 |
 | HuBERT·RMVPE·RVC 초기 가중치 | 로컬 특징 추출·학습 | [RVC에서 안내하는 Hugging Face 저장소](https://huggingface.co/lj1995/VoiceConversionWebUI) | 리비전 고정, SHA-256 검증, `external/RVC/assets` |
 | Shotcut 번들의 whisper-cli | 보컬 한국어 발음의 참고용 자동 인식 | [Shotcut 다운로드](https://shotcut.org/download/), [whisper.cpp 코드](https://github.com/ggml-org/whisper.cpp) | **선택**, 이미 이 PC에 있던 `C:\Program Files\Shotcut\whisper-cli.exe`와 `share\shotcut\whisper_models\ggml-base-q5_1.bin` 사용. 앱 실행 의존성은 아니며 로컬 API 없음. Shotcut은 GPLv3, whisper.cpp 코드는 MIT |
 

@@ -180,25 +180,38 @@ def generate(project: Project) -> str:
             (" (음표 수에 맞게 수정 후 정렬하세요)" if count != len(notes) else " (검토 후 정렬하세요)"))
 
 
-def sing(project: Project) -> str:
+def sing(project: Project, progress: Callable[[str], None] | None = None) -> str:
     score = project.artifact("score.json")
     if not score.is_file():
         raise ValueError("가사 정렬을 먼저 실행하세요.")
     result = project.artifact("singing.wav")
-    _run([sys.executable, str(ROOT / "scripts" / "render_singing.py"), str(score), str(result), "--gpu-index", "0"])
+    if project.singing_engine == "korean_tts":
+        _run([str(RVC_PYTHON), str(ROOT / "scripts" / "render_korean_singing.py"),
+              str(project.path), str(result)], progress=progress)
+    elif project.singing_engine == "diffsinger":
+        _run([sys.executable, str(ROOT / "scripts" / "render_singing.py"),
+              str(score), str(result), "--gpu-index", "0"])
+    else:
+        raise ValueError("노래 합성 방식을 다시 선택하세요.")
     events = json.loads(score.read_text(encoding="utf-8"))["syllables"]
     short = sum(event["end"] - event["start"] < .15 for event in events)
     suffix = f" · 0.15초 미만 {short}음절은 발음을 확인하세요" if short else ""
     return f"노래 보컬 생성: {result.name}{suffix}"
 
 
-def sing_segment(project: Project) -> str:
+def sing_segment(project: Project, progress: Callable[[str], None] | None = None) -> str:
     score = project.artifact("score.json")
     output = project.artifact("singing.wav")
     if not score.is_file() or not output.is_file():
         raise ValueError("전체 노래 합성을 먼저 실행하세요.")
     if project.segment_end <= project.segment_start:
         raise ValueError("재생성할 구간을 올바르게 설정하세요.")
+    if project.singing_engine == "korean_tts":
+        result = sing(project, progress)
+        project.stages.pop("convert", None)
+        project.stages.pop("mix", None)
+        project.save()
+        return result + " · 발음 우선 방식은 전체 보컬을 갱신했습니다"
     _run([sys.executable, str(ROOT / "scripts" / "render_singing.py"), str(score), str(output),
           "--gpu-index", "0", "--start", str(project.segment_start), "--end", str(project.segment_end)])
     project.stages.pop("convert", None)
@@ -290,7 +303,7 @@ def run_stage(path: Path, stage: str, progress: Callable[[str], None] | None = N
     record(stage, "시작", f"프로젝트: {path}")
     project.mark(stage, "진행 중")
     try:
-        result = train(project, progress) if stage == "train" else HANDLERS[stage](project)
+        result = HANDLERS[stage](project, progress) if stage in ("train", "sing", "sing_segment") else HANDLERS[stage](project)
         project.mark(stage, "완료", result)
         record(stage, "완료", result)
         return result
