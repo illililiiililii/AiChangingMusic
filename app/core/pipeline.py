@@ -253,6 +253,8 @@ def convert(project: Project) -> str:
         source = project.artifact("singing.wav")
         if not source.is_file():
             raise ValueError("노래 합성을 먼저 실행하세요.")
+        if project.stages.get("sing", {}).get("status") != "완료":
+            raise ValueError("노래 합성 방식이나 가사가 변경되었습니다. 노래 합성을 다시 실행하세요.")
     else:
         raise ValueError("음색 변환 입력을 다시 선택하세요.")
     if not RVC_PYTHON.is_file():
@@ -304,6 +306,11 @@ def run_stage(path: Path, stage: str, progress: Callable[[str], None] | None = N
     project.mark(stage, "진행 중")
     try:
         result = HANDLERS[stage](project, progress) if stage in ("train", "sing", "sing_segment") else HANDLERS[stage](project)
+        if stage == "sing":
+            for dependent in ("convert", "mix"):
+                project.stages.pop(dependent, None)
+        elif stage == "convert":
+            project.stages.pop("mix", None)
         project.mark(stage, "완료", result)
         record(stage, "완료", result)
         return result

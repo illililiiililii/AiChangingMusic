@@ -63,6 +63,8 @@ class Project:
     def load(cls, path: Path) -> "Project":
         path = Path(path).resolve()
         data = json.loads(path.read_text(encoding="utf-8"))
+        # Projects saved before the engine choice used DiffSingerKR.
+        data.setdefault("singing_engine", "diffsinger")
         allowed = cls.__dataclass_fields__.keys() - {"path"}
         return cls(**{key: value for key, value in data.items() if key in allowed}, path=path)
 

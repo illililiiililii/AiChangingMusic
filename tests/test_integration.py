@@ -85,6 +85,41 @@ class IntegrationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "가사와 저장된"):
             score_lines("틀린 가사", events)
 
+    def test_existing_project_keeps_legacy_engine(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project.json"
+            path.write_text('{"name": "기존 프로젝트", "conversion_pitch_semitones": -12}', encoding="utf-8")
+            loaded = Project.load(path)
+            self.assertEqual(loaded.singing_engine, "diffsinger")
+            self.assertEqual(loaded.conversion_pitch_semitones, -12)
+
+    def test_new_singing_requires_fresh_conversion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            project = Project(path=folder / "project.json", parody_lyrics="가",
+                              stages={"sing": {"status": "완료"},
+                                      "convert": {"status": "완료"}, "mix": {"status": "완료"}})
+            project.save()
+            (folder / "score.json").write_text('{"syllables": [{"syllable": "가", "start": 0, "end": 1, "midi": 60}]}',
+                                                  encoding="utf-8")
+            (folder / "singing.wav").touch()
+            with patch("app.core.pipeline._run") as run_mock:
+                run_stage(project.path, "sing")
+            self.assertIn("render_korean_singing.py", " ".join(run_mock.call_args.args[0]))
+            loaded = Project.load(project.path)
+            self.assertNotIn("convert", loaded.stages)
+            self.assertNotIn("mix", loaded.stages)
+            model, index = folder / "voice.pth", folder / "voice.index"
+            model.touch()
+            index.touch()
+            loaded.voice_consent = True
+            loaded.voice_model = str(model)
+            loaded.voice_index = str(index)
+            loaded.stages.pop("sing")
+            loaded.save()
+            with self.assertRaisesRegex(ValueError, "노래 합성을 다시 실행"):
+                run_stage(project.path, "convert")
+
     def test_recorded_guide_is_used_for_conversion(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
@@ -127,6 +162,13 @@ class IntegrationTest(unittest.TestCase):
         window._sync()
         self.assertEqual(window.project.conversion_source, "recording")
         self.assertEqual(window.project.guide_vocal, "C:/guide.wav")
+        window.project.singing_engine = "diffsinger"
+        window.project.conversion_source = "synth"
+        window.project.conversion_pitch_semitones = -12
+        window._refresh()
+        window.singing_engine.setCurrentIndex(window.singing_engine.findData("korean_tts"))
+        window._sync()
+        self.assertEqual(window.voice_pitch.value(), 0)
         window.close()
 
 

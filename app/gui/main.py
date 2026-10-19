@@ -324,7 +324,7 @@ class Studio(QMainWindow):
         index_row.addWidget(self.index_rate)
         layout.addLayout(index_row)
         pitch_row = QHBoxLayout()
-        pitch_row.addWidget(QLabel("변환 보컬 음높이 (반음, 낮은 목소리는 -12부터 시험)"))
+        pitch_row.addWidget(QLabel("변환 보컬 음높이 (반음, 발음 우선 방식은 0부터 시험)"))
         self.voice_pitch = QSpinBox()
         self.voice_pitch.setRange(-24, 24)
         pitch_row.addWidget(self.voice_pitch)
@@ -450,6 +450,7 @@ class Studio(QMainWindow):
 
     def refresh_models(self):
         checks = {
+            "한국어 발음 모델": ROOT / "external" / "ppaso-tts" / "onnx" / "vocoder.onnx.data",
             "DiffSingerKR": ROOT / "external" / "DiffSingerKR-space" / "Checkpoint" / "S_200000.pt",
             "RVC": ROOT / "external" / "RVC" / "infer" / "cli.py",
             "RVC 음성 특징 모델": ROOT / "external" / "RVC" / "assets" / "hubert_base" / "pytorch_model.bin",
@@ -536,6 +537,8 @@ class Studio(QMainWindow):
         if self.singing_engine.currentData() != self.project.singing_engine:
             for stage in ("sing", "sing_segment", "convert", "mix"):
                 self.project.stages.pop(stage, None)
+            if self.singing_engine.currentData() == "korean_tts" and self.conversion_source.currentData() == "synth":
+                self.voice_pitch.setValue(0)
         if self.original_text.toPlainText() != self.project.original_lyrics:
             self.project.analysis.pop("original_syllables", None)
             self.project.analysis.pop("syllable_timing_method", None)
