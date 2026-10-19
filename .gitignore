@@ -5,6 +5,9 @@ outputs/
 cache/
 models/
 voice_data/
+logs/
+work/
+.pytest_cache/
 *.wav
 *.mp3
 *.flac

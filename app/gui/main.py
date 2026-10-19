@@ -5,9 +5,11 @@ from __future__ import annotations
 import sys
 import subprocess
 import traceback
+import time
+import re
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Signal, Qt
+from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Signal, Slot, Qt
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QFontDatabase, QPainter, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from app.audio_processing.io import waveform
 from app.core.project import Project, STAGES
+from app.core.activity_log import LOG_DIR
 from app.core.settings import ROOT, recent_projects, remember
 
 
@@ -98,6 +101,18 @@ class StageWorker(QObject):
                     self.stage_progress.emit(index, len(stages))
                 result = "전체 처리 완료: final.wav, final.mp3"
             else:
+                if self.stage in ("separate", "transcribe", "analyze"):
+                    project = Project.load(self.path)
+                    if (project.stages.get("import", {}).get("status") != "완료"
+                            or not project.artifact("source.wav").is_file()):
+                        self.progress.emit("선행 작업: 원곡 가져오기")
+                        run_stage(self.path, "import", self.progress.emit)
+                if self.stage in ("transcribe", "analyze"):
+                    project = Project.load(self.path)
+                    if (project.stages.get("separate", {}).get("status") != "완료"
+                            or not project.artifact("vocals.wav").is_file()):
+                        self.progress.emit("선행 작업: 보컬·반주 분리")
+                        run_stage(self.path, "separate", self.progress.emit)
                 self.progress.emit(f"{LABELS[self.stage]} 실행 중")
                 result = run_stage(self.path, self.stage, self.progress.emit)
             self.finished.emit(result)
@@ -111,6 +126,11 @@ class Studio(QMainWindow):
         self.project = Project()
         self.thread = None
         self.worker = None
+        self._active_stage = None
+        self._train_started = None
+        self._train_phase = ""
+        self._train_timer = QTimer(self)
+        self._train_timer.timeout.connect(self._update_train_status)
         self.setWindowTitle("AI Parody Music Studio")
         self.resize(1130, 820)
         self.player = QMediaPlayer(self)
@@ -171,7 +191,7 @@ class Studio(QMainWindow):
         self.wave = Waveform()
         layout.addWidget(self.wave)
         play = QPushButton("원곡 재생 / 일시정지")
-        play.clicked.connect(lambda: self.play(self.project.source))
+        play.clicked.connect(self.play_source)
         layout.addWidget(play)
         buttons = QGridLayout()
         self.stage_buttons = {}
@@ -281,10 +301,16 @@ class Studio(QMainWindow):
         choose_file = QPushButton("음성 파일 선택")
         choose_file.clicked.connect(self.choose_voice_file)
         row.addWidget(choose_file)
-        train = QPushButton("RVC 프로필 학습")
-        train.clicked.connect(self.train_voice)
-        row.addWidget(train)
+        self.train_button = QPushButton("RVC 프로필 학습")
+        self.train_button.clicked.connect(self.train_voice)
+        row.addWidget(self.train_button)
         layout.addLayout(row)
+        self.train_status = QLabel("학습 대기 중")
+        layout.addWidget(self.train_status)
+        self.train_progress = QProgressBar()
+        self.train_progress.setRange(0, 100)
+        self.train_progress.setValue(0)
+        layout.addWidget(self.train_progress)
         layout.addStretch()
         return page
 
@@ -348,7 +374,14 @@ class Studio(QMainWindow):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         layout.addWidget(self.log)
+        open_logs = QPushButton("로그 폴더 열기")
+        open_logs.clicked.connect(self.open_logs)
+        layout.addWidget(open_logs)
         return page
+
+    def open_logs(self):
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_DIR)))
 
     def _models_tab(self):
         page, layout = QWidget(), QVBoxLayout()
@@ -435,10 +468,19 @@ class Studio(QMainWindow):
         for path in recent_projects():
             action = self.recent_menu.addAction(path)
             action.triggered.connect(lambda checked=False, p=path: self.load_project(Path(p)))
-        self.wave.set_file(Path(self.project.source) if self.project.source else None)
+        normalized_source = self.project.artifact("source.wav") if self.project.path else None
+        if (normalized_source and normalized_source.is_file()
+                and self.project.stages.get("import", {}).get("status") == "완료"):
+            self.wave.set_file(normalized_source)
+        else:
+            self.wave.set_file(Path(self.project.source) if self.project.source else None)
         self.refresh_models()
 
     def _sync(self):
+        if self.original_text.toPlainText() != self.project.original_lyrics:
+            self.project.analysis.pop("original_syllables", None)
+            self.project.analysis.pop("syllable_timing_method", None)
+            self.project.stages.pop("analyze", None)
         if self.source_language.currentData() != self.project.source_language:
             for stage in ("transcribe", "generate", "lyrics", "sing", "sing_segment", "convert", "mix"):
                 self.project.stages.pop(stage, None)
@@ -475,7 +517,11 @@ class Studio(QMainWindow):
         directory = QFileDialog.getExistingDirectory(self, "프로젝트 저장 폴더 선택", str(ROOT / "outputs"))
         if not directory:
             return
-        self.project = Project(name=Path(directory).name, path=Path(directory) / "project.json")
+        project_path = Path(directory) / "project.json"
+        if project_path.is_file():
+            self.load_project(project_path)
+            return
+        self.project = Project(name=Path(directory).name, path=project_path)
         self.project.save()
         remember(self.project.path)
         self._refresh()
@@ -617,6 +663,24 @@ class Studio(QMainWindow):
             self.player.setSource(QUrl.fromLocalFile(str(path)))
             self.player.play()
 
+    def play_source(self):
+        if not self.project.source:
+            self.statusBar().showMessage("원곡 파일을 선택하세요", 4000)
+            return
+        source = Path(self.project.source)
+        if self.project.path and self.project.stages.get("import", {}).get("status") == "완료":
+            normalized = self.project.artifact("source.wav")
+            if normalized.is_file():
+                self.play(str(normalized))
+                return
+        if source.suffix.lower() == ".mp3" and source.is_file():
+            with source.open("rb") as audio_file:
+                header = audio_file.read(12)
+            if header[4:8] == b"ftyp":
+                self.statusBar().showMessage("이 파일은 MP3가 아닌 MP4입니다. '원곡 가져오기' 후 재생하세요", 7000)
+                return
+        self.play(str(source))
+
     def play_artifact(self, name: str):
         if self.project.path:
             self.play(str(self.project.artifact(name)))
@@ -642,24 +706,88 @@ class Studio(QMainWindow):
             self.new_project()
             if self.project.path is None:
                 return
+        if stage in ("import", "separate", "transcribe", "analyze", "all") and not self.project.source:
+            self.choose_source()
+            if not self.project.source:
+                self.statusBar().showMessage("원곡 파일을 선택하면 작업을 시작합니다", 5000)
+                return
         self._sync()
         self.project.save()
         self.progress.setRange(0, 0)
         self.log.appendPlainText(f"▶ {LABELS[stage]}")
+        if stage == "train":
+            self._train_started = time.monotonic()
+            self._train_phase = "준비 중"
+            self.train_button.setEnabled(False)
+            self.train_button.setText("학습 중…")
+            self.train_progress.setRange(0, 0)
+            self._train_timer.start(1000)
+            self._update_train_status()
         self.thread = QThread(self)
+        self._active_stage = stage
         self.worker = StageWorker(self.project.path, stage)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self.statusBar().showMessage)
-        self.worker.progress.connect(self.log.appendPlainText)
+        self.worker.progress.connect(self._show_progress)
         self.worker.stage_progress.connect(self._stage_tick)
-        self.worker.finished.connect(lambda result: self._done(stage, result))
-        self.worker.failed.connect(lambda error: self._failed(stage, error))
+        self.worker.finished.connect(self._done_result)
+        self.worker.failed.connect(self._failed_result)
         self.worker.finished.connect(self.thread.quit)
         self.worker.failed.connect(self.thread.quit)
         self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._thread_finished)
         self.thread.finished.connect(self.thread.deleteLater)
         self.thread.start()
+
+    @Slot(str)
+    def _done_result(self, result: str):
+        if self._active_stage == "train":
+            self._finish_train_status(True)
+        self._done(self._active_stage, result)
+
+    @Slot(str)
+    def _failed_result(self, error: str):
+        if self._active_stage == "train":
+            self._finish_train_status(False)
+        self._failed(self._active_stage, error)
+
+    @Slot(str)
+    def _show_progress(self, message: str):
+        self.statusBar().showMessage(message)
+        self.log.appendPlainText(message)
+        if self._active_stage == "train":
+            if message.startswith("=== "):
+                self._train_phase = message.strip("= ")
+                self.train_progress.setRange(0, 0)
+            else:
+                match = re.search(r"학습 에포크:\s*(\d+)\s*/\s*(\d+)", message)
+                if match:
+                    current, total = map(int, match.groups())
+                    self._train_phase = f"RVC 학습 {current}/{total} 에포크"
+                    self.train_progress.setRange(0, total)
+                    self.train_progress.setValue(current)
+            self._update_train_status()
+
+    @Slot()
+    def _update_train_status(self):
+        if self._train_started is not None:
+            elapsed = int(time.monotonic() - self._train_started)
+            self.train_status.setText(f"{self._train_phase} · 경과 {elapsed // 60}분 {elapsed % 60}초")
+
+    def _finish_train_status(self, success: bool):
+        self._train_timer.stop()
+        self._train_started = None
+        self.train_button.setEnabled(True)
+        self.train_button.setText("RVC 프로필 학습")
+        self.train_progress.setRange(0, 100)
+        self.train_progress.setValue(100 if success else 0)
+        self.train_status.setText("학습 완료" if success else "학습 실패 — logs 폴더 확인")
+
+    @Slot()
+    def _thread_finished(self):
+        self.thread = None
+        self.worker = None
+        self._active_stage = None
 
     def _stage_tick(self, current: int, total: int):
         self.progress.setRange(0, total)
@@ -679,7 +807,7 @@ class Studio(QMainWindow):
         self.log.appendPlainText(error)
         self.project = Project.load(self.project.path)
         self._refresh()
-        self.statusBar().showMessage(f"{LABELS[stage]} 실패 — 로그 확인", 10000)
+        self.statusBar().showMessage(f"{LABELS[stage]} 실패 — logs/app.log 확인", 10000)
 
 
 def main() -> int:

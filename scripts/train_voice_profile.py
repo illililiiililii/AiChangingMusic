@@ -6,6 +6,8 @@ import argparse
 import os
 import subprocess
 import sys
+import re
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +30,9 @@ def main() -> None:
     env = os.environ.copy()
     env.update({"PATH": str(ROOT / "external" / "ffmpeg") + os.pathsep + env.get("PATH", ""),
                 "CUDA_VISIBLE_DEVICES": str(args.gpu), "HF_HUB_OFFLINE": "1", "PYTHONUTF8": "1"})
-    log = data / "training.log"
+    log_dir = ROOT / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log = log_dir / f"{args.name}-training.log"
     data.mkdir(parents=True, exist_ok=True)
 
     def step(title: str, command: list[str]) -> None:
@@ -36,7 +40,20 @@ def main() -> None:
         with log.open("a", encoding="utf-8") as output:
             output.write("\n=== " + title + " ===\n")
             output.flush()
-            code = subprocess.call(command, cwd=RVC, env=env, stdout=output, stderr=subprocess.STDOUT)
+            with subprocess.Popen(command, cwd=RVC, env=env, stdout=output,
+                                  stderr=subprocess.STDOUT) as process:
+                position = output.tell()
+                while process.poll() is None:
+                    if title == "RVC 학습":
+                        with log.open("r", encoding="utf-8", errors="replace") as reader:
+                            reader.seek(position)
+                            for line in reader:
+                                match = re.search(r"====> 에포크:\s*(\d+)", line)
+                                if match:
+                                    print(f"학습 에포크: {match.group(1)}/{args.epochs}", flush=True)
+                            position = reader.tell()
+                    time.sleep(1)
+                code = process.wait()
         if code:
             raise RuntimeError(f"{title} 실패 ({code}). 로그: {log}")
 

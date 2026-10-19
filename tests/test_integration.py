@@ -37,12 +37,20 @@ class IntegrationTest(unittest.TestCase):
             score = align("가나", notes)
             self.assertEqual([e["midi"] for e in score["syllables"]], [60, 64])
             self.assertEqual([e["start"] for e in score["syllables"]], [0.1, 0.6])
-            with self.assertRaisesRegex(ValueError, "2음절과 음표 1개"):
-                align("가나", notes[:1])
+            self.assertEqual(len(align("가나", notes[:1])["syllables"]), 2)
+            self.assertEqual([event["syllable"] for event in align("12BPM", notes * 3)["syllables"][:3]],
+                             ["십", "이", "비"])
+            self.assertTrue(align("가", notes * 10)["partial"])
             estimated = estimate_syllables(
                 {"segments": [{"words": [{"start": .1, "end": .5, "text": " 가나다"}]}]}, notes)
             self.assertEqual([unit["syllable"] for unit in estimated], ["가", "나", "다"])
             self.assertEqual(estimated[0]["note_index"], 0)
+            corrected = estimate_syllables(
+                {"segments": [{"text": "틀린 인식", "words": [
+                    {"start": .1, "end": .5, "text": " 틀린"},
+                    {"start": .6, "end": 1.2, "text": " 인식"}]}]}, notes, "바른 가사")
+            self.assertEqual("".join(unit["syllable"] for unit in corrected), "바른가사")
+            self.assertTrue(all(unit["method"] == "edited lyrics over ASR intervals" for unit in corrected))
             stem = folder / "stem.wav"
             sf.write(stem, vocal[:rate], rate)
             target = folder / "mix.wav"

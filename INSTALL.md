@@ -35,7 +35,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 - **CUDA 없음**: `scripts/check_environment.py`의 GPU 결과를 확인하고 NVIDIA 드라이버를 점검합니다. CPU 추론은 모델별로 느리며 전체 경로를 검증하지 않았습니다.
 - **GPU 메모리 부족**: 다른 GPU 작업을 닫고 다시 실행합니다. Demucs는 CUDA 메모리 오류 시 CPU로 한 번 재시도합니다. RVC 학습은 6GB GPU 배치 2 설정입니다.
 - **가사나 음정 오류**: 노래 ASR과 음정 추정은 초안입니다. 원곡 탭의 가사·음표 표를 수정한 뒤 정렬부터 재실행합니다.
-- **음성 학습 실패**: `voice_data/<프로필>/training.log`의 마지막 오류를 확인합니다. 10분 이상의 깨끗한 단일 화자 녹음이 필요합니다.
+- **음성 학습 실패**: `logs/<프로필>-training.log`의 마지막 오류를 확인합니다. 앱의 모든 단계 시작·완료·오류는 `logs/app.log`에 기록됩니다. 10분 이상의 깨끗한 단일 화자 녹음이 필요합니다.
 - **FFmpeg·모델 없음**: `setup.bat`을 다시 실행합니다. 라이선스·다운로드 주소는 [MODELS.md](MODELS.md), [DEPENDENCIES.md](DEPENDENCIES.md)를 보세요.
 
 신규 Windows PC에서 처음부터 설치하는 절차는 아직 별도 기기에서 검증하지 못했습니다. 이 개발 PC에서 설치와 실행, 모델 다운로드 및 로컬 전체 파이프라인을 시험했습니다.

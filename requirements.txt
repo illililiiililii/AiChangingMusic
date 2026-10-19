@@ -2,3 +2,4 @@
 -r requirements-poc.txt
 PySide6==6.12.0
 huggingface_hub>=0.35,<1
+setuptools<81

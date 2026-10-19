@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Callable
 
@@ -14,6 +15,7 @@ import soundfile as sf
 
 from app.audio_processing.io import decode, ffmpeg
 from app.core.project import Project
+from app.core.activity_log import record
 from app.core.settings import ROOT
 
 RVC_PYTHON = ROOT / ".venv-rvc" / "Scripts" / "python.exe"
@@ -102,12 +104,20 @@ def transcribe(project: Project) -> str:
     if not RVC_PYTHON.is_file():
         raise FileNotFoundError(".venv-rvc가 없습니다.")
     output = project.artifact("transcription.json")
+    previous_recognition = ""
+    if output.is_file():
+        previous_data = json.loads(output.read_text(encoding="utf-8"))
+        previous_recognition = "\n".join(segment.get("text", "") for segment in previous_data.get("segments", []))
+    keep_edited_lyrics = bool(project.original_lyrics.strip()
+                              and project.original_lyrics.strip() != previous_recognition.strip())
     _run([str(RVC_PYTHON), str(ROOT / "scripts" / "transcribe_local.py"), str(vocal),
           str(model), str(output), "--language", project.source_language])
     data = json.loads(output.read_text(encoding="utf-8"))
-    project.original_lyrics = "\n".join(segment["text"] for segment in data["segments"])
+    if not keep_edited_lyrics:
+        project.original_lyrics = "\n".join(segment["text"] for segment in data["segments"])
     project.save()
-    return f"가사 인식: {len(data['segments'])}개 구간 (수정 권장)"
+    suffix = ", 직접 수정한 가사는 유지" if keep_edited_lyrics else " (수정 권장)"
+    return f"가사 인식: {len(data['segments'])}개 구간{suffix}"
 
 
 def analyze(project: Project) -> str:
@@ -119,9 +129,15 @@ def analyze(project: Project) -> str:
     result = analyze_vocal(vocal)
     transcription = project.artifact("transcription.json")
     if transcription.is_file():
+        transcript = json.loads(transcription.read_text(encoding="utf-8"))
         result["original_syllables"] = estimate_syllables(
-            json.loads(transcription.read_text(encoding="utf-8")), result["notes"])
-        result["syllable_timing_method"] = "Whisper 단어 구간의 균등 분할 추정; 수동 검토 필요"
+            transcript, result["notes"], project.original_lyrics)
+        recognized = "\n".join(segment.get("text", "") for segment in transcript.get("segments", []))
+        edited = bool(project.original_lyrics.strip()
+                      and project.original_lyrics.strip() != recognized.strip())
+        result["syllable_timing_method"] = (
+            "수정한 원곡 가사를 Whisper 단어 시간에 분배한 추정; 수동 검토 필요" if edited
+            else "Whisper 단어 구간의 균등 분할 추정; 수동 검토 필요")
     project.analysis.update(result)
     project.save()
     _json(project.artifact("analysis.json"), result)
@@ -136,11 +152,16 @@ def align_lyrics(project: Project) -> str:
     if not project.parody_lyrics.strip():
         raise ValueError("개사 가사를 입력하세요.")
     result = align(project.parody_lyrics, notes)
-    project.analysis["lyric_fit"] = f"{result['score']:.0f}/100"
+    project.analysis["lyric_fit"] = (
+        f"부분 {len(result['syllables'])}/{len(notes)}음표 · 음절 적합도 {result['score']:.0f}/100"
+        if result.get("partial") else f"{result['score']:.0f}/100")
     project.analysis["alignment"] = result["syllables"]
     project.save()
     _json(project.artifact("score.json"), result)
-    return f"{len(result['syllables'])}개 음절 정렬, 적합도 {result['score']:.0f}/100"
+    if result.get("partial"):
+        return (f"부분 가사 {len(result['syllables'])}/{len(notes)}개 음표에 정렬 완료 "
+                "(나머지 구간에는 새 보컬이 없습니다)")
+    return f"가사 {len(result['syllables'])}개 음절 정렬, 적합도 {result['score']:.0f}/100"
 
 
 def generate(project: Project) -> str:
@@ -248,11 +269,14 @@ def run_stage(path: Path, stage: str, progress: Callable[[str], None] | None = N
     if stage not in HANDLERS:
         raise ValueError(stage)
     project = Project.load(path)
+    record(stage, "시작", f"프로젝트: {path}")
     project.mark(stage, "진행 중")
     try:
         result = train(project, progress) if stage == "train" else HANDLERS[stage](project)
         project.mark(stage, "완료", result)
+        record(stage, "완료", result)
         return result
     except Exception as exc:
         project.mark(stage, "실패", str(exc)[:250])
+        record(stage, "실패", traceback.format_exc())
         raise

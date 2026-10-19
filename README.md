@@ -36,4 +36,4 @@ Windows 11에서 원곡과 새 가사, **사용 허락을 받은 말하기 음�
 
 이 프로젝트의 DiffSingerKR 체크포인트는 CSD 데이터의 비상업 조건 때문에 비상업 기술 검증용입니다. 모델·입력 곡·화자에 대한 권리는 별도로 확인해야 합니다. 공개 배포본에는 모델 가중치, 사용자 음성, 학습 데이터, 출력 음악이 없습니다. [MODELS.md](MODELS.md), [DEPENDENCIES.md](DEPENDENCIES.md), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하세요.
 
-문제 발생 시 GUI **생성·출력** 탭의 로그와 `voice_data/<프로필>/training.log`를 확인하고 [INSTALL.md](INSTALL.md)의 문제 해결 절을 따르세요.
+문제 발생 시 GUI **생성·출력** 탭의 **로그 폴더 열기**를 누르거나 `logs/app.log`와 `logs/<프로필>-training.log`를 확인하고 [INSTALL.md](INSTALL.md)의 문제 해결 절을 따르세요.
