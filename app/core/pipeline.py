@@ -152,7 +152,7 @@ def align_lyrics(project: Project) -> str:
         raise ValueError("멜로디 분석을 먼저 실행하세요.")
     if not project.parody_lyrics.strip():
         raise ValueError("개사 가사를 입력하세요.")
-    result = align(project.parody_lyrics, notes)
+    result = align(project.parody_lyrics, notes, project.original_lyrics)
     project.analysis["lyric_fit"] = (
         f"부분 {len(result['syllables'])}/{len(notes)}음표 · 음절 적합도 {result['score']:.0f}/100"
         if result.get("partial") else f"{result['score']:.0f}/100")

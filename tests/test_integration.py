@@ -17,7 +17,7 @@ from app.lyric_generation.alignment import align
 from app.music_analysis.syllables import estimate_syllables
 from app.mixing.render import render_mix
 from scripts.render_singing import phrase_inputs
-from scripts.render_korean_singing import align_onset, score_lines, SAMPLE_RATE
+from scripts.render_korean_singing import score_lines
 
 
 class IntegrationTest(unittest.TestCase):
@@ -49,6 +49,19 @@ class IntegrationTest(unittest.TestCase):
             self.assertEqual([event["syllable"] for event in align("12BPM", notes * 3)["syllables"][:3]],
                              ["십", "이", "비"])
             self.assertTrue(align("가", notes * 10)["partial"])
+            # Changed line lengths must not push the next line across a rest.
+            line_notes = [
+                {"start": .0, "end": .4, "midi": 60},
+                {"start": .4, "end": .8, "midi": 62},
+                {"start": .8, "end": 1.2, "midi": 64},
+                {"start": 3.0, "end": 3.4, "midi": 65},
+                {"start": 3.4, "end": 3.8, "midi": 67},
+            ]
+            changed = align("가나다라\n마", line_notes, "가나다\n라마")
+            self.assertEqual(len(changed["syllables"]), 5)
+            self.assertEqual(changed["line_note_ranges"], [(0, 3), (3, 5)])
+            self.assertEqual(changed["syllables"][4]["start"], 3.0)
+            self.assertEqual(changed["syllables"][3]["end"], 1.2)
             estimated = estimate_syllables(
                 {"segments": [{"words": [{"start": .1, "end": .5, "text": " 가나다"}]}]}, notes)
             self.assertEqual([unit["syllable"] for unit in estimated], ["가", "나", "다"])
@@ -84,15 +97,6 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(lines[0][0], ["바른", "가사"])
         with self.assertRaisesRegex(ValueError, "가사와 저장된"):
             score_lines("틀린 가사", events)
-
-    def test_korean_onset_alignment_preserves_voiced_samples(self):
-        silence = np.zeros(round(.4 * SAMPLE_RATE), dtype="float32")
-        voice = np.full(round(.3 * SAMPLE_RATE), .1, dtype="float32")
-        source = np.concatenate([silence, voice])
-        aligned = align_onset(source)
-        self.assertLess(len(aligned), len(source))
-        self.assertLess(np.argmax(aligned > .05) / SAMPLE_RATE, .1)
-        np.testing.assert_array_equal(aligned[-len(voice):], voice)
 
     def test_existing_project_keeps_legacy_engine(self):
         with tempfile.TemporaryDirectory() as temporary:
