@@ -15,7 +15,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QTabWidget,
+    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -319,6 +319,20 @@ class Studio(QMainWindow):
         self.index_rate.setSingleStep(0.05)
         index_row.addWidget(self.index_rate)
         layout.addLayout(index_row)
+        pitch_row = QHBoxLayout()
+        pitch_row.addWidget(QLabel("변환 보컬 음높이 (반음, 낮은 목소리는 -12부터 시험)"))
+        self.voice_pitch = QSpinBox()
+        self.voice_pitch.setRange(-24, 24)
+        pitch_row.addWidget(self.voice_pitch)
+        layout.addLayout(pitch_row)
+        protect_row = QHBoxLayout()
+        protect_row.addWidget(QLabel("자음·숨소리 보호 (낮을수록 강함)"))
+        self.voice_protect = QDoubleSpinBox()
+        self.voice_protect.setRange(0, 0.5)
+        self.voice_protect.setDecimals(2)
+        self.voice_protect.setSingleStep(0.05)
+        protect_row.addWidget(self.voice_protect)
+        layout.addLayout(protect_row)
         layout.addStretch()
         return page
 
@@ -440,6 +454,8 @@ class Studio(QMainWindow):
         self.voice_files.setText(self.project.voice_source)
         self.voice_consent.setChecked(self.project.voice_consent)
         self.index_rate.setValue(self.project.conversion_index_rate)
+        self.voice_pitch.setValue(self.project.conversion_pitch_semitones)
+        self.voice_protect.setValue(self.project.conversion_protect)
         self.vocal_gain.setValue(round(self.project.vocal_gain * 100))
         self.instrumental_gain.setValue(round(self.project.instrumental_gain * 100))
         self.reverb.setValue(round(self.project.reverb * 100))
@@ -500,7 +516,9 @@ class Studio(QMainWindow):
             self.project.analysis.pop("lyric_fit", None)
         if (self.voice_model_edit.text().strip() != self.project.voice_model or
                 self.voice_index_edit.text().strip() != self.project.voice_index or
-                self.index_rate.value() != self.project.conversion_index_rate):
+                self.index_rate.value() != self.project.conversion_index_rate or
+                self.voice_pitch.value() != self.project.conversion_pitch_semitones or
+                self.voice_protect.value() != self.project.conversion_protect):
             for stage in ("convert", "mix"):
                 self.project.stages.pop(stage, None)
         if (self.vocal_gain.value() / 100 != self.project.vocal_gain or
@@ -518,6 +536,8 @@ class Studio(QMainWindow):
         self.project.voice_source = self.voice_files.text().strip()
         self.project.voice_consent = self.voice_consent.isChecked()
         self.project.conversion_index_rate = self.index_rate.value()
+        self.project.conversion_pitch_semitones = self.voice_pitch.value()
+        self.project.conversion_protect = self.voice_protect.value()
         self.project.vocal_gain = self.vocal_gain.value() / 100
         self.project.instrumental_gain = self.instrumental_gain.value() / 100
         self.project.reverb = self.reverb.value() / 100

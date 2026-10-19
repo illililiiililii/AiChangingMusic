@@ -239,7 +239,8 @@ def convert(project: Project) -> str:
     env.update({"PATH": str(ffmpeg().parent) + os.pathsep + env.get("PATH", ""),
                 "CUDA_VISIBLE_DEVICES": _gpu_with_free_memory(), "HF_HUB_OFFLINE": "1"})
     command = [str(RVC_PYTHON), "-m", "infer.cli", "--model", str(model), "--input", str(source),
-               "--output", str(target), "--pitch", "0", "--f0-method", "rmvpe",
+               "--output", str(target), "--pitch", str(project.conversion_pitch_semitones),
+               "--f0-method", "rmvpe", "--protect", str(project.conversion_protect),
                "--index-rate", str(project.conversion_index_rate), "--overwrite"]
     if project.conversion_index_rate > 0:
         command.extend(["--index", str(index)])
