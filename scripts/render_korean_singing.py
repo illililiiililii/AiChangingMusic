@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+from scipy.ndimage import uniform_filter1d
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -22,6 +23,7 @@ from app.audio_processing.io import ffmpeg
 
 MODEL = ROOT / "external" / "ppaso-tts"
 SAMPLE_RATE = 22050
+MAX_ONSET_SHIFT_SECONDS = 0.35
 
 
 def score_lines(lyrics: str, events: list[dict]) -> list[tuple[list[str], list[dict]]]:
@@ -56,11 +58,36 @@ def stretch(audio: np.ndarray, seconds: float) -> np.ndarray:
     return np.pad(rendered[:desired], (0, max(0, desired - len(rendered))))
 
 
+def align_onset(audio: np.ndarray) -> np.ndarray:
+    """Move TTS's initial pause off the scored beat without changing voiced audio."""
+    if not audio.size:
+        return audio
+    window = min(len(audio), max(1, round(.01 * SAMPLE_RATE)))
+    envelope = uniform_filter1d(np.abs(audio), size=window, mode="constant")
+    threshold = max(.003, float(np.max(envelope)) * .035)
+    active = np.flatnonzero(envelope > threshold)
+    if not active.size:
+        return audio
+    shift = min(round(MAX_ONSET_SHIFT_SECONDS * SAMPLE_RATE),
+                max(0, int(active[0]) - round(.025 * SAMPLE_RATE)))
+    return audio[shift:]
+
+
 def render(project_path: Path, output_path: Path) -> dict:
     data = json.loads(project_path.read_text(encoding="utf-8"))
     score = json.loads((project_path.parent / "score.json").read_text(encoding="utf-8"))
     events = score["syllables"]
     lines = score_lines(data["parody_lyrics"], events)
+    for words, aligned in lines:
+        first = 0
+        for word in words:
+            phrase = aligned[first:first + len(word)]
+            for current, following in zip(phrase, phrase[1:]):
+                gap = following["start"] - current["end"]
+                if gap > .5:
+                    print(f"=== 음절 시각 확인: '{word}' 안의 쉼 {gap:.2f}초 "
+                          f"({current['end']:.2f}–{following['start']:.2f}초)", flush=True)
+            first += len(word)
     if not (MODEL / "onnx" / "vocoder.onnx.data").is_file():
         raise FileNotFoundError("한국어 발음 모델이 없습니다. setup.bat을 다시 실행하세요.")
     sys.path.insert(0, str(MODEL / "example"))
@@ -77,7 +104,7 @@ def render(project_path: Path, output_path: Path) -> dict:
             phrase = aligned[first:last]
             target_start, target_end = phrase[0]["start"], phrase[-1]["end"]
             audio = tts.synthesize(word).astype("float32")
-            samples = stretch(audio, target_end - target_start)
+            samples = align_onset(stretch(audio, target_end - target_start))
             start = round(target_start * SAMPLE_RATE)
             end = min(start + len(samples), len(output))
             output[start:end] += samples[:end - start]

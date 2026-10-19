@@ -17,7 +17,7 @@ from app.lyric_generation.alignment import align
 from app.music_analysis.syllables import estimate_syllables
 from app.mixing.render import render_mix
 from scripts.render_singing import phrase_inputs
-from scripts.render_korean_singing import score_lines
+from scripts.render_korean_singing import align_onset, score_lines, SAMPLE_RATE
 
 
 class IntegrationTest(unittest.TestCase):
@@ -84,6 +84,15 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(lines[0][0], ["바른", "가사"])
         with self.assertRaisesRegex(ValueError, "가사와 저장된"):
             score_lines("틀린 가사", events)
+
+    def test_korean_onset_alignment_preserves_voiced_samples(self):
+        silence = np.zeros(round(.4 * SAMPLE_RATE), dtype="float32")
+        voice = np.full(round(.3 * SAMPLE_RATE), .1, dtype="float32")
+        source = np.concatenate([silence, voice])
+        aligned = align_onset(source)
+        self.assertLess(len(aligned), len(source))
+        self.assertLess(np.argmax(aligned > .05) / SAMPLE_RATE, .1)
+        np.testing.assert_array_equal(aligned[-len(voice):], voice)
 
     def test_existing_project_keeps_legacy_engine(self):
         with tempfile.TemporaryDirectory() as temporary:
