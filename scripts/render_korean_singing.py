@@ -56,6 +56,21 @@ def stretch(audio: np.ndarray, seconds: float) -> np.ndarray:
     return np.pad(rendered[:desired], (0, max(0, desired - len(rendered))))
 
 
+def trim_tts_silence(audio: np.ndarray) -> np.ndarray:
+    """Remove synthesis padding before fitting the word to the original beat."""
+    if not audio.size:
+        return audio
+    window = max(1, round(.01 * SAMPLE_RATE))
+    envelope = np.convolve(np.abs(audio), np.ones(window) / window, mode="same")
+    threshold = max(.002, float(np.max(envelope)) * .025)
+    active = np.flatnonzero(envelope > threshold)
+    if not active.size:
+        return audio
+    lead = max(0, int(active[0]) - round(.02 * SAMPLE_RATE))
+    tail = min(len(audio), int(active[-1]) + round(.04 * SAMPLE_RATE))
+    return audio[lead:tail]
+
+
 def render(project_path: Path, output_path: Path) -> dict:
     data = json.loads(project_path.read_text(encoding="utf-8"))
     score = json.loads((project_path.parent / "score.json").read_text(encoding="utf-8"))
@@ -76,7 +91,7 @@ def render(project_path: Path, output_path: Path) -> dict:
             last = first + len(word)
             phrase = aligned[first:last]
             target_start, target_end = phrase[0]["start"], phrase[-1]["end"]
-            audio = tts.synthesize(word).astype("float32")
+            audio = trim_tts_silence(tts.synthesize(word).astype("float32"))
             samples = stretch(audio, target_end - target_start)
             start = round(target_start * SAMPLE_RATE)
             end = min(start + len(samples), len(output))
@@ -89,6 +104,13 @@ def render(project_path: Path, output_path: Path) -> dict:
     if peak > .98:
         output *= .98 / peak
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if data.get("singing_engine") == "korean_tts" and (project_path.parent / "vocals.wav").is_file():
+        from scripts.match_original_vocal import follow_pitch, original_f0
+        print("=== 원곡 보컬 음높이 추적", flush=True)
+        output = follow_pitch(output, original_f0(project_path.parent / "vocals.wav"), SAMPLE_RATE)
+        peak = float(np.max(np.abs(output)))
+        if peak > .98:
+            output *= .98 / peak
     sf.write(output_path, output, SAMPLE_RATE, subtype="PCM_16")
     return {"output": str(output_path), "phrases": phrase_count,
             "seconds": len(output) / SAMPLE_RATE, "peak": peak}

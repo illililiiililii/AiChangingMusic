@@ -17,10 +17,17 @@ from app.lyric_generation.alignment import align
 from app.music_analysis.syllables import estimate_syllables
 from app.mixing.render import render_mix
 from scripts.render_singing import phrase_inputs
-from scripts.render_korean_singing import score_lines
+from scripts.render_korean_singing import SAMPLE_RATE, score_lines, trim_tts_silence
 
 
 class IntegrationTest(unittest.TestCase):
+    def test_korean_tts_padding_is_trimmed_before_time_stretch(self):
+        tone = .1 * np.sin(2 * np.pi * 220 * np.arange(SAMPLE_RATE // 5) / SAMPLE_RATE)
+        padded = np.concatenate((np.zeros(SAMPLE_RATE // 3), tone, np.zeros(SAMPLE_RATE // 3)))
+        trimmed = trim_tts_silence(padded)
+        self.assertLess(len(trimmed), len(padded) // 2)
+        self.assertGreater(np.max(np.abs(trimmed[:SAMPLE_RATE // 20])), .05)
+
     def test_project_import_alignment_and_mix(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)

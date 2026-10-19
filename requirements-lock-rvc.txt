@@ -58,6 +58,7 @@ pyparsing==3.3.3
 python-dateutil==2.9.0.post0
 python-mecab-ko==1.3.7
 python-mecab-ko-dic==2.1.1.post2
+pyworld==0.3.5
 PyYAML==6.0.3
 regex==2026.9.29
 requests==2.34.2
