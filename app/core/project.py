@@ -27,6 +27,8 @@ class Project:
     conversion_index_rate: float = 0.25
     conversion_pitch_semitones: int = 0
     conversion_protect: float = 0.2
+    conversion_source: str = "synth"
+    guide_vocal: str = ""
     vocal_gain: float = 1.0
     instrumental_gain: float = 0.8
     reverb: float = 0.08

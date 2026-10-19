@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import soundfile as sf
@@ -15,6 +16,7 @@ from app.core.project import Project
 from app.lyric_generation.alignment import align
 from app.music_analysis.syllables import estimate_syllables
 from app.mixing.render import render_mix
+from scripts.render_singing import phrase_inputs
 
 
 class IntegrationTest(unittest.TestCase):
@@ -65,6 +67,38 @@ class IntegrationTest(unittest.TestCase):
             self.assertEqual(len(data), 2 * rate)
             self.assertLessEqual(result["peak_after_guard"], .97 + 1e-6)
 
+    def test_singing_score_preserves_short_rests(self):
+        phrase = [{"syllable": "가", "start": 1.0, "end": 1.2, "midi": 60},
+                  {"syllable": "나", "start": 1.3, "end": 1.5, "midi": 62}]
+        durations, lyrics, notes = phrase_inputs(phrase)
+        self.assertEqual(lyrics, ["가", "<X>", "나"])
+        self.assertEqual(notes, [72, 0, 74])
+        self.assertAlmostEqual(sum(durations), .5)
+        self.assertAlmostEqual(durations[1], .1)
+
+    def test_recorded_guide_is_used_for_conversion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            guide = folder / "recorded.wav"
+            sf.write(guide, np.zeros(4410, dtype="float32"), 44100)
+            model, index, rvc = (folder / name for name in ("model.pth", "model.index", "python.exe"))
+            for path in (model, index, rvc):
+                path.touch()
+            project = Project(path=folder / "project.json", voice_consent=True,
+                              voice_model=str(model), voice_index=str(index),
+                              conversion_source="recording", guide_vocal=str(guide))
+            project.save()
+            with patch("app.core.pipeline.RVC_PYTHON", rvc), \
+                 patch("app.core.pipeline.decode", return_value=folder / "guide_vocal.wav") as decode_mock, \
+                 patch("app.core.pipeline._run") as run_mock, \
+                 patch("app.core.pipeline._gpu_with_free_memory", return_value=""), \
+                 patch("app.core.pipeline.ffmpeg", return_value=folder / "ffmpeg.exe"):
+                run_stage(project.path, "convert")
+            self.assertEqual(decode_mock.call_args.args, (guide, folder / "guide_vocal.wav"))
+            self.assertEqual(decode_mock.call_args.kwargs["channels"], 1)
+            command = run_mock.call_args.args[0]
+            self.assertEqual(command[command.index("--input") + 1], str(folder / "guide_vocal.wav"))
+
     def test_gui_opens_offscreen(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication
@@ -78,6 +112,12 @@ class IntegrationTest(unittest.TestCase):
         window = Studio()
         self.assertEqual(window.tabs.count(), 5)
         self.assertIn("원곡", window.tabs.tabText(0))
+        self.assertEqual(window.conversion_source.count(), 2)
+        window.conversion_source.setCurrentIndex(window.conversion_source.findData("recording"))
+        window.guide_vocal_edit.setText("C:/guide.wav")
+        window._sync()
+        self.assertEqual(window.project.conversion_source, "recording")
+        self.assertEqual(window.project.guide_vocal, "C:/guide.wav")
         window.close()
 
 

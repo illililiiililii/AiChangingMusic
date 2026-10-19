@@ -8,18 +8,8 @@ import os
 import sys
 from pathlib import Path
 
-parser = argparse.ArgumentParser()
-parser.add_argument("score", type=Path)
-parser.add_argument("output", type=Path)
-parser.add_argument("--gpu-index", type=int, default=0)
-parser.add_argument("--cpu", action="store_true")
-parser.add_argument("--start", type=float)
-parser.add_argument("--end", type=float)
-args = parser.parse_args()
-os.environ["CUDA_VISIBLE_DEVICES"] = "" if args.cpu else str(args.gpu_index)
-
-import numpy as np  # noqa: E402
-import soundfile as sf  # noqa: E402
+import numpy as np
+import soundfile as sf
 
 root = Path(__file__).resolve().parents[1]
 model = root / "external" / "DiffSingerKR-space"
@@ -38,7 +28,38 @@ def chunks(events: list[dict]) -> list[list[dict]]:
     return result
 
 
+def phrase_inputs(phrase: list[dict]) -> tuple[list[float], list[str], list[int]]:
+    """Keep note durations and the short rests between syllables on the score timeline."""
+    durations, lyrics, notes = [], [], []
+    previous_end = phrase[0]["start"]
+    for event in phrase:
+        gap = float(event["start"] - previous_end)
+        if gap < -.001:
+            raise ValueError("음절 시간이 겹칩니다. 음절 타이밍을 확인하세요.")
+        if gap > .001:
+            durations.append(gap)
+            lyrics.append("<X>")
+            notes.append(0)
+        duration = float(event["end"] - event["start"])
+        if duration <= 0:
+            raise ValueError("음절 길이는 0보다 커야 합니다. 음절 타이밍을 확인하세요.")
+        durations.append(duration)
+        lyrics.append(event["syllable"])
+        notes.append(int(event["midi"]) + 12)  # checkpoint sings ~one octave below input note IDs
+        previous_end = event["end"]
+    return durations, lyrics, notes
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("score", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("--gpu-index", type=int, default=0)
+    parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--start", type=float)
+    parser.add_argument("--end", type=float)
+    args = parser.parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"] = "" if args.cpu else str(args.gpu_index)
     if not (model / "Checkpoint" / "S_200000.pt").is_file():
         raise FileNotFoundError("DiffSingerKR 모델이 없습니다. scripts/fetch_diffsingerkr.py를 실행하세요.")
     data = json.loads(args.score.read_text(encoding="utf-8"))
@@ -68,10 +89,9 @@ def main() -> None:
     else:
         output = np.zeros(target_length, dtype=np.float32)
     for phrase in chunks(events):
-        durations = [max(.08, float(e["end"] - e["start"])) for e in phrase]
-        notes = [int(e["midi"]) + 12 for e in phrase]  # checkpoint sings ~one octave below input note IDs
+        durations, lyrics, notes = phrase_inputs(phrase)
         samples = inferencer.Inference_Epoch(message_times_list=[durations],
-                    lyrics=[[e["syllable"] for e in phrase]], notes=[notes],
+                    lyrics=[lyrics], notes=[notes],
                     singers=["CSD"], genres=["Children"], ddim_steps=20, use_tqdm=False)[0]
         samples = np.asarray(samples, dtype=np.float32)
         if not np.isfinite(samples).all() or not samples.size:

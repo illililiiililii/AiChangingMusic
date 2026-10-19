@@ -186,7 +186,10 @@ def sing(project: Project) -> str:
         raise ValueError("가사 정렬을 먼저 실행하세요.")
     result = project.artifact("singing.wav")
     _run([sys.executable, str(ROOT / "scripts" / "render_singing.py"), str(score), str(result), "--gpu-index", "0"])
-    return f"노래 보컬 생성: {result.name}"
+    events = json.loads(score.read_text(encoding="utf-8"))["syllables"]
+    short = sum(event["end"] - event["start"] < .15 for event in events)
+    suffix = f" · 0.15초 미만 {short}음절은 발음을 확인하세요" if short else ""
+    return f"노래 보컬 생성: {result.name}{suffix}"
 
 
 def sing_segment(project: Project) -> str:
@@ -229,9 +232,16 @@ def convert(project: Project) -> str:
         raise FileNotFoundError("RVC 모델을 선택하세요.")
     if project.conversion_index_rate > 0 and not index.is_file():
         raise FileNotFoundError("RVC 인덱스를 선택하거나 음색 반영 강도를 0으로 설정하세요.")
-    source = project.artifact("singing.wav")
-    if not source.is_file():
-        raise ValueError("노래 합성을 먼저 실행하세요.")
+    if project.conversion_source == "recording":
+        if not project.guide_vocal:
+            raise ValueError("직접 녹음한 보컬 파일을 선택하세요.")
+        source = decode(Path(project.guide_vocal), project.artifact("guide_vocal.wav"), channels=1)
+    elif project.conversion_source == "synth":
+        source = project.artifact("singing.wav")
+        if not source.is_file():
+            raise ValueError("노래 합성을 먼저 실행하세요.")
+    else:
+        raise ValueError("음색 변환 입력을 다시 선택하세요.")
     if not RVC_PYTHON.is_file():
         raise FileNotFoundError(".venv-rvc가 없습니다.")
     target = project.artifact("converted.wav")
@@ -261,7 +271,9 @@ def mix(project: Project) -> str:
     _run([str(ffmpeg()), "-hide_banner", "-loglevel", "error", "-y", "-i", str(wav),
           "-codec:a", "libmp3lame", "-b:a", "256k", str(mp3)])
     _json(project.artifact("final.json"), {"ai_generated": True, "source": project.source,
-        "voice_model": project.voice_model, "wav": str(wav), "mp3": str(mp3)})
+        "voice_model": project.voice_model, "conversion_source": project.conversion_source,
+        "guide_vocal": project.guide_vocal if project.conversion_source == "recording" else "",
+        "wav": str(wav), "mp3": str(mp3)})
     return f"완료: {wav.name}, {mp3.name} · AI 생성 음성"
 
 

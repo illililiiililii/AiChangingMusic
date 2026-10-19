@@ -82,13 +82,17 @@ class StageWorker(QObject):
             from app.core.pipeline import run_stage
             if self.stage == "all":
                 project = Project.load(self.path)
-                stages = ["import", "separate", "transcribe", "analyze"]
-                if not project.parody_lyrics.strip() and project.theme.strip():
-                    stages.append("generate")
-                stages.append("lyrics")
+                stages = ["import", "separate"]
+                if project.conversion_source == "synth":
+                    stages.extend(["transcribe", "analyze"])
+                    if not project.parody_lyrics.strip() and project.theme.strip():
+                        stages.append("generate")
+                    stages.append("lyrics")
                 if not project.voice_model and project.voice_source:
                     stages.append("train")
-                stages.extend(["sing", "convert", "mix"])
+                if project.conversion_source == "synth":
+                    stages.append("sing")
+                stages.extend(["convert", "mix"])
                 expected = {"import": "source.wav", "separate": "vocals.wav", "transcribe": "transcription.json",
                             "analyze": "analysis.json", "lyrics": "score.json", "sing": "singing.wav",
                             "convert": "converted.wav", "mix": "final.mp3"}
@@ -333,6 +337,23 @@ class Studio(QMainWindow):
         self.voice_protect.setSingleStep(0.05)
         protect_row.addWidget(self.voice_protect)
         layout.addLayout(protect_row)
+        layout.addWidget(QLabel("음색 변환에 사용할 노래 보컬"))
+        self.conversion_source = QComboBox()
+        self.conversion_source.addItem("앱이 합성한 보컬 (singing.wav)", "synth")
+        self.conversion_source.addItem("직접 녹음한 보컬 파일", "recording")
+        layout.addWidget(self.conversion_source)
+        recording_row = QHBoxLayout()
+        self.guide_vocal_edit = QLineEdit()
+        self.guide_vocal_edit.setPlaceholderText("반주에 맞춰 부른 보컬만 있는 WAV/MP3/FLAC/OGG")
+        recording_row.addWidget(self.guide_vocal_edit)
+        choose_recording = QPushButton("녹음 파일 선택")
+        choose_recording.clicked.connect(self.choose_recording)
+        recording_row.addWidget(choose_recording)
+        preview_recording = QPushButton("녹음 미리듣기")
+        preview_recording.clicked.connect(lambda: self.play(self.guide_vocal_edit.text().strip()))
+        recording_row.addWidget(preview_recording)
+        layout.addLayout(recording_row)
+        layout.addWidget(QLabel("녹음 파일은 원곡 반주와 시작 시각을 맞추고 반주 소리는 빼 주세요. 부른 음정을 유지하려면 음높이 0."))
         layout.addStretch()
         return page
 
@@ -456,6 +477,8 @@ class Studio(QMainWindow):
         self.index_rate.setValue(self.project.conversion_index_rate)
         self.voice_pitch.setValue(self.project.conversion_pitch_semitones)
         self.voice_protect.setValue(self.project.conversion_protect)
+        self.conversion_source.setCurrentIndex(max(0, self.conversion_source.findData(self.project.conversion_source)))
+        self.guide_vocal_edit.setText(self.project.guide_vocal)
         self.vocal_gain.setValue(round(self.project.vocal_gain * 100))
         self.instrumental_gain.setValue(round(self.project.instrumental_gain * 100))
         self.reverb.setValue(round(self.project.reverb * 100))
@@ -518,7 +541,9 @@ class Studio(QMainWindow):
                 self.voice_index_edit.text().strip() != self.project.voice_index or
                 self.index_rate.value() != self.project.conversion_index_rate or
                 self.voice_pitch.value() != self.project.conversion_pitch_semitones or
-                self.voice_protect.value() != self.project.conversion_protect):
+                self.voice_protect.value() != self.project.conversion_protect or
+                self.conversion_source.currentData() != self.project.conversion_source or
+                self.guide_vocal_edit.text().strip() != self.project.guide_vocal):
             for stage in ("convert", "mix"):
                 self.project.stages.pop(stage, None)
         if (self.vocal_gain.value() / 100 != self.project.vocal_gain or
@@ -538,6 +563,8 @@ class Studio(QMainWindow):
         self.project.conversion_index_rate = self.index_rate.value()
         self.project.conversion_pitch_semitones = self.voice_pitch.value()
         self.project.conversion_protect = self.voice_protect.value()
+        self.project.conversion_source = self.conversion_source.currentData()
+        self.project.guide_vocal = self.guide_vocal_edit.text().strip()
         self.project.vocal_gain = self.vocal_gain.value() / 100
         self.project.instrumental_gain = self.instrumental_gain.value() / 100
         self.project.reverb = self.reverb.value() / 100
@@ -673,6 +700,13 @@ class Studio(QMainWindow):
                                                "Audio (*.mp3 *.wav *.flac *.ogg *.m4a)")
         if path:
             self.voice_files.setText(path)
+
+    def choose_recording(self):
+        path, _ = QFileDialog.getOpenFileName(self, "직접 부른 보컬 파일", "",
+                                              "Audio (*.wav *.mp3 *.flac *.ogg)")
+        if path:
+            self.guide_vocal_edit.setText(path)
+            self.conversion_source.setCurrentIndex(self.conversion_source.findData("recording"))
 
     def train_voice(self):
         if not self.voice_consent.isChecked():
