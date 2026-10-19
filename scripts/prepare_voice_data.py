@@ -36,7 +36,7 @@ def main() -> None:
         if total >= args.max_seconds:
             break
         command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-i", str(source),
-                   "-af", "highpass=f=75,lowpass=f=8000,afftdn=nf=-25",
+                   "-af", "highpass=f=75,lowpass=f=8000,afftdn=nf=-50:nr=6",
                    "-ar", "32000", "-ac", "1", "-f", "f32le", "pipe:1"]
         raw = subprocess.run(command, check=True, capture_output=True).stdout
         audio = np.frombuffer(raw, dtype="<f4")

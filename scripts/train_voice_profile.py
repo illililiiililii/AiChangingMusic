@@ -18,7 +18,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path)
     parser.add_argument("name")
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--authorized", action="store_true", required=True)
     args = parser.parse_args()

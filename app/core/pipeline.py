@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import traceback
+from uuid import uuid4
 from pathlib import Path
 from typing import Callable
 
@@ -208,7 +209,7 @@ def train(project: Project, progress: Callable[[str], None] | None = None) -> st
         raise PermissionError("음성 학습·변환 허락 확인이 필요합니다.")
     if not project.voice_source:
         raise ValueError("말하기 음성 파일 또는 폴더를 선택하세요.")
-    name = "profile_" + project.directory.name.encode("utf-8").hex()[:16]
+    name = "profile_" + project.directory.name.encode("utf-8").hex()[:16] + "_" + uuid4().hex[:8]
     _run([str(RVC_PYTHON), str(ROOT / "scripts" / "train_voice_profile.py"),
           project.voice_source, name, "--authorized"], progress=progress)
     models = sorted((ROOT / "external" / "RVC" / "assets" / "weights").glob(f"{name}_e*.pth"),
@@ -224,8 +225,10 @@ def convert(project: Project) -> str:
     if not project.voice_consent:
         raise PermissionError("음성 학습·변환 허락 확인이 필요합니다.")
     model, index = Path(project.voice_model), Path(project.voice_index)
-    if not model.is_file() or not index.is_file():
-        raise FileNotFoundError("RVC 모델과 인덱스를 선택하세요.")
+    if not model.is_file():
+        raise FileNotFoundError("RVC 모델을 선택하세요.")
+    if project.conversion_index_rate > 0 and not index.is_file():
+        raise FileNotFoundError("RVC 인덱스를 선택하거나 음색 반영 강도를 0으로 설정하세요.")
     source = project.artifact("singing.wav")
     if not source.is_file():
         raise ValueError("노래 합성을 먼저 실행하세요.")
@@ -235,10 +238,12 @@ def convert(project: Project) -> str:
     env = os.environ.copy()
     env.update({"PATH": str(ffmpeg().parent) + os.pathsep + env.get("PATH", ""),
                 "CUDA_VISIBLE_DEVICES": _gpu_with_free_memory(), "HF_HUB_OFFLINE": "1"})
-    _run([str(RVC_PYTHON), "-m", "infer.cli", "--model", str(model), "--input", str(source),
-          "--output", str(target), "--pitch", "0", "--f0-method", "rmvpe",
-          "--index", str(index), "--index-rate", "0.75", "--overwrite"],
-         cwd=ROOT / "external" / "RVC", env=env)
+    command = [str(RVC_PYTHON), "-m", "infer.cli", "--model", str(model), "--input", str(source),
+               "--output", str(target), "--pitch", "0", "--f0-method", "rmvpe",
+               "--index-rate", str(project.conversion_index_rate), "--overwrite"]
+    if project.conversion_index_rate > 0:
+        command.extend(["--index", str(index)])
+    _run(command, cwd=ROOT / "external" / "RVC", env=env)
     return f"음색 변환: {target.name}"
 
 

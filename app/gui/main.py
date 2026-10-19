@@ -311,6 +311,14 @@ class Studio(QMainWindow):
         self.train_progress.setRange(0, 100)
         self.train_progress.setValue(0)
         layout.addWidget(self.train_progress)
+        index_row = QHBoxLayout()
+        index_row.addWidget(QLabel("음색 반영 강도 (잡음이 심하면 낮추세요)"))
+        self.index_rate = QDoubleSpinBox()
+        self.index_rate.setRange(0, 1)
+        self.index_rate.setDecimals(2)
+        self.index_rate.setSingleStep(0.05)
+        index_row.addWidget(self.index_rate)
+        layout.addLayout(index_row)
         layout.addStretch()
         return page
 
@@ -431,6 +439,7 @@ class Studio(QMainWindow):
         self.voice_index_edit.setText(self.project.voice_index)
         self.voice_files.setText(self.project.voice_source)
         self.voice_consent.setChecked(self.project.voice_consent)
+        self.index_rate.setValue(self.project.conversion_index_rate)
         self.vocal_gain.setValue(round(self.project.vocal_gain * 100))
         self.instrumental_gain.setValue(round(self.project.instrumental_gain * 100))
         self.reverb.setValue(round(self.project.reverb * 100))
@@ -490,7 +499,8 @@ class Studio(QMainWindow):
             self.project.analysis.pop("alignment", None)
             self.project.analysis.pop("lyric_fit", None)
         if (self.voice_model_edit.text().strip() != self.project.voice_model or
-                self.voice_index_edit.text().strip() != self.project.voice_index):
+                self.voice_index_edit.text().strip() != self.project.voice_index or
+                self.index_rate.value() != self.project.conversion_index_rate):
             for stage in ("convert", "mix"):
                 self.project.stages.pop(stage, None)
         if (self.vocal_gain.value() / 100 != self.project.vocal_gain or
@@ -507,6 +517,7 @@ class Studio(QMainWindow):
         self.project.voice_index = self.voice_index_edit.text().strip()
         self.project.voice_source = self.voice_files.text().strip()
         self.project.voice_consent = self.voice_consent.isChecked()
+        self.project.conversion_index_rate = self.index_rate.value()
         self.project.vocal_gain = self.vocal_gain.value() / 100
         self.project.instrumental_gain = self.instrumental_gain.value() / 100
         self.project.reverb = self.reverb.value() / 100

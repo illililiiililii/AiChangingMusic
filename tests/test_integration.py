@@ -26,11 +26,13 @@ class IntegrationTest(unittest.TestCase):
             vocal = (.1 * np.sin(2 * np.pi * 220 * time)).astype("float32")
             source = folder / "input.wav"
             sf.write(source, np.stack([vocal, vocal], axis=1), rate)
-            project = Project(name="검증", source=str(source), path=folder / "project" / "project.json")
+            project = Project(name="검증", source=str(source), conversion_index_rate=.4,
+                              path=folder / "project" / "project.json")
             project.save()
             self.assertIn("source.wav", run_stage(project.path, "import"))
             loaded = Project.load(project.path)
             self.assertEqual(loaded.name, "검증")
+            self.assertEqual(loaded.conversion_index_rate, .4)
             self.assertTrue(loaded.artifact("source.wav").is_file())
             notes = [{"start": 0.1, "end": 0.5, "midi": 60},
                      {"start": 0.6, "end": 1.2, "midi": 64}]
