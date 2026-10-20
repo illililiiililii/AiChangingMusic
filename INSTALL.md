@@ -24,19 +24,25 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 
 수동 가사는 Ollama 없이 사용할 수 있습니다. 자동 개사에는 [Ollama for Windows](https://ollama.com/download/windows)를 따로 설치하고 실행한 다음, 터미널에서 `ollama pull qwen3.5:4b`를 한 번 실행합니다. 앱은 `127.0.0.1:11434/api/generate`에만 접속합니다. 다른 로컬 Ollama 모델을 쓰려면 가사 탭에서 이름을 바꾸세요. 모델 다운로드 후 오프라인 로컬 서버로 사용할 수 있습니다.
 
-## 4. 음성 프로필
+## 4. 선택 설치: Basic Pitch·OpenUtau
+
+Basic Pitch는 기본 설치에 포함되지 않습니다. 원곡의 분리된 보컬에서 다른 MIDI 초안을 만들고 싶다면 앱의 **모델·환경 → Basic Pitch 선택 설치**를 누르거나 `install.bat --basic-pitch`를 실행하세요. 이미 앱을 설치했다면 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_basic_pitch.ps1`도 사용할 수 있습니다. Python 3.10용 `.venv-basicpitch`에만 설치되어 기존 GUI·RVC 환경을 변경하지 않습니다. 설치 뒤 원곡 탭에서 초안을 만들고 피아노롤에서 검토합니다. [Basic Pitch 공식 안내](https://github.com/spotify/basic-pitch#readme)에서 지원 환경과 CLI를 확인할 수 있습니다.
+
+[OpenUtau](https://github.com/openutau/OpenUtau)는 별도 프로그램입니다. 앱이 내보낸 MIDI를 OpenUtau에 가져와 보이스뱅크와 가사를 설정한 뒤 렌더한 보컬 파일을 앱의 **목소리 → OpenUtau·외부 툴에서 만든 보컬**에 넣으세요. OpenUtau와 DiffSinger 보이스뱅크는 이 설치 스크립트가 자동으로 설치하지 않습니다.
+
+## 5. 음성 프로필
 
 목소리 탭의 허락 확인을 체크하고, 동일 화자의 깨끗한 일반 말하기 오디오 10분 이상이 있는 폴더를 선택해 학습합니다. MP3/WAV/FLAC/OGG/M4A를 읽습니다. 결과는 `external/RVC/assets/weights`, `external/RVC/assets/indices`에 생기고, 학습 기록은 `voice_data`에 남습니다. 6GB GPU에서는 batch 2, FP32로 순차 처리합니다. 다른 사용자의 허락받은 녹음도 동일한 절차로 가능합니다.
 
 음질이 나쁘면 한 사람의 목소리만 뚜렷하고 박수·음악·군중 소리·강한 잔향이 없는 녹음만 별도 폴더에 모아 재학습하세요. 재학습은 새 프로필을 만들어 이전 클립과 체크포인트를 섞지 않습니다. 목소리 탭의 **음색 반영 강도**를 낮춘 뒤 음색 변환과 믹싱만 재실행해 기존 모델의 잡음 영향을 비교할 수도 있습니다.
 
-## 5. 문제 해결
+## 6. 문제 해결
 
 - **Python 버전 없음**: 두 버전을 x64로 설치하고 `py -0p`를 확인합니다. 설치 스크립트는 기본 사용자 설치 위치도 검사합니다.
 - **Git 없음**: Git for Windows 설치 후 새 터미널에서 재실행합니다.
 - **CUDA 없음**: `scripts/check_environment.py`의 GPU 결과를 확인하고 NVIDIA 드라이버를 점검합니다. CPU 추론은 모델별로 느리며 전체 경로를 검증하지 않았습니다.
 - **GPU 메모리 부족**: 다른 GPU 작업을 닫고 다시 실행합니다. Demucs는 CUDA 메모리 오류 시 CPU로 한 번 재시도합니다. RVC 학습은 6GB GPU 배치 2 설정입니다.
-- **가사나 음정 오류**: 노래 ASR과 음정 추정은 초안입니다. 원곡 탭의 가사·음표 표를 수정한 뒤 정렬부터 재실행합니다.
+- **가사나 음정 오류**: 노래 ASR과 음정 추정은 초안입니다. 원곡 탭의 BPM·첫 박 시각과 피아노롤 음표를 수정한 뒤 정렬부터 재실행합니다.
 - **음성 학습 실패**: `logs/<프로필>-training.log`의 마지막 오류를 확인합니다. 앱의 모든 단계 시작·완료·오류는 `logs/app.log`에 기록됩니다. 10분 이상의 깨끗한 단일 화자 녹음이 필요합니다.
 - **FFmpeg·모델 없음**: `setup.bat`을 다시 실행합니다. 라이선스·다운로드 주소는 [MODELS.md](MODELS.md), [DEPENDENCIES.md](DEPENDENCIES.md)를 보세요.
 - **한국어 발음이 뭉개짐**: 생성·출력 탭에서 **한국어 발음 우선** 합성을 선택하고 노래 합성을 다시 실행합니다. 목소리 탭의 **변환 보컬 음높이**를 `0`으로 시작하여 음색 변환을 다시 실행합니다. 합성된 `singing.wav` 자체를 먼저 들어 보고 음절 시각을 수정하세요.

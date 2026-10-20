@@ -128,6 +128,9 @@ def analyze(project: Project) -> str:
     from app.music_analysis.melody import analyze_vocal
     from app.music_analysis.syllables import estimate_syllables
     result = analyze_vocal(vocal)
+    if (not project.analysis.get("notes") and not project.beat_offset_seconds
+            and result.get("beat_times")):
+        project.beat_offset_seconds = result["beat_times"][0]
     transcription = project.artifact("transcription.json")
     if transcription.is_file():
         transcript = json.loads(transcription.read_text(encoding="utf-8"))
@@ -143,6 +146,41 @@ def analyze(project: Project) -> str:
     project.save()
     _json(project.artifact("analysis.json"), result)
     return f"BPM {result['bpm']:.1f}, 음표 {len(result['notes'])}개 추정"
+
+
+def extract_basic_pitch(project: Project, progress: Callable[[str], None] | None = None) -> str:
+    """Produce a reviewable MIDI candidate; never replace hand-edited notes."""
+    vocal = project.artifact("vocals.wav")
+    if not vocal.is_file():
+        raise ValueError("보컬 분리를 먼저 실행하세요.")
+    executable = ROOT / ".venv-basicpitch" / "Scripts" / "basic-pitch.exe"
+    if not executable.is_file():
+        raise FileNotFoundError("Basic Pitch가 없습니다. scripts/setup_basic_pitch.ps1을 실행하세요.")
+    output = project.artifact("basic_pitch")
+    output.mkdir(parents=True, exist_ok=True)
+    environment = os.environ.copy()
+    environment["PYTHONIOENCODING"] = "utf-8"
+    _run([str(executable), str(output), str(vocal)], env=environment, progress=progress)
+    midi_files = sorted(output.glob("*.mid"), key=lambda path: path.stat().st_mtime)
+    if not midi_files:
+        raise RuntimeError("Basic Pitch가 MIDI 파일을 만들지 못했습니다. logs 폴더를 확인하세요.")
+    from app.music_analysis.midi_io import read_midi
+    notes, midi_bpm = read_midi(midi_files[-1])
+    if not notes:
+        raise ValueError("MIDI에 음표가 없습니다. 분리된 보컬을 확인하세요.")
+    project.analysis["basic_pitch_notes"] = notes
+    project.analysis["basic_pitch_midi"] = str(midi_files[-1])
+    project.analysis["basic_pitch_bpm"] = midi_bpm
+    project.save()
+    return f"Basic Pitch 음표 후보 {len(notes)}개 생성 · 피아노롤에서 검토 후 적용하세요"
+
+
+def install_basic_pitch(project: Project, progress: Callable[[str], None] | None = None) -> str:
+    if progress:
+        progress("Basic Pitch 선택 설치 중 — Python 3.10 전용 환경을 만듭니다")
+    _run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+          str(ROOT / "scripts" / "setup_basic_pitch.ps1")], cwd=ROOT, progress=progress)
+    return "Basic Pitch 설치 완료"
 
 
 def align_lyrics(project: Project) -> str:
@@ -245,10 +283,17 @@ def convert(project: Project) -> str:
         raise FileNotFoundError("RVC 모델을 선택하세요.")
     if project.conversion_index_rate > 0 and not index.is_file():
         raise FileNotFoundError("RVC 인덱스를 선택하거나 음색 반영 강도를 0으로 설정하세요.")
-    if project.conversion_source == "recording":
+    if project.conversion_source in ("recording", "openutau"):
         if not project.guide_vocal:
             raise ValueError("직접 녹음한 보컬 파일을 선택하세요.")
         source = decode(Path(project.guide_vocal), project.artifact("guide_vocal.wav"), channels=1)
+        if project.guide_offset_seconds:
+            audio, rate = sf.read(source, dtype="float32")
+            shift = round(project.guide_offset_seconds * rate)
+            if shift < 0 and -shift >= len(audio):
+                raise ValueError("외부 보컬 시작 위치 조정이 녹음 길이보다 큽니다.")
+            audio = np.pad(audio, (shift, 0)) if shift > 0 else audio[-shift:] if shift < 0 else audio
+            sf.write(source, audio, rate)
     elif project.conversion_source == "synth":
         source = project.artifact("singing.wav")
         if not source.is_file():
@@ -293,7 +338,9 @@ def mix(project: Project) -> str:
 
 
 HANDLERS = {"import": import_audio, "separate": separate, "transcribe": transcribe,
-            "analyze": analyze, "generate": generate, "lyrics": align_lyrics, "train": train,
+            "analyze": analyze, "install_basic_pitch": install_basic_pitch,
+            "basic_pitch": extract_basic_pitch,
+            "generate": generate, "lyrics": align_lyrics, "train": train,
             "sing": sing, "sing_segment": sing_segment,
             "convert": convert, "mix": mix}
 
@@ -305,7 +352,7 @@ def run_stage(path: Path, stage: str, progress: Callable[[str], None] | None = N
     record(stage, "시작", f"프로젝트: {path}")
     project.mark(stage, "진행 중")
     try:
-        result = HANDLERS[stage](project, progress) if stage in ("train", "sing", "sing_segment") else HANDLERS[stage](project)
+        result = HANDLERS[stage](project, progress) if stage in ("install_basic_pitch", "basic_pitch", "train", "sing", "sing_segment") else HANDLERS[stage](project)
         if stage == "sing":
             for dependent in ("convert", "mix"):
                 project.stages.pop(dependent, None)

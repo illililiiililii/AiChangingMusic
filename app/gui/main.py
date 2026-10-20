@@ -7,13 +7,15 @@ import subprocess
 import traceback
 import time
 import re
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Signal, Slot, Qt
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QFontDatabase, QPainter, QPen
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimedia import (QAudioInput, QAudioOutput, QMediaCaptureSession,
+                                  QMediaDevices, QMediaFormat, QMediaPlayer, QMediaRecorder)
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
+    QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -23,10 +25,12 @@ from app.audio_processing.io import waveform
 from app.core.project import Project, STAGES
 from app.core.activity_log import LOG_DIR
 from app.core.settings import ROOT, recent_projects, remember
+from app.gui.piano_roll import PianoRollDialog
+from app.music_analysis.midi_io import read_midi, write_midi
 
 
 LABELS = {"all": "전체 생성", "import": "원곡 가져오기", "separate": "보컬·반주 분리", "transcribe": "원곡 가사 인식",
-          "analyze": "박자·멜로디 분석", "generate": "로컬 AI 개사", "lyrics": "가사 정렬", "sing": "노래 합성",
+          "analyze": "박자·멜로디 분석", "install_basic_pitch": "Basic Pitch 설치", "basic_pitch": "Basic Pitch MIDI 초안", "generate": "로컬 AI 개사", "lyrics": "가사 정렬", "sing": "노래 합성",
           "train": "목소리 학습", "sing_segment": "선택 구간 노래 재생성",
           "convert": "음색 변환", "mix": "믹싱·출력"}
 
@@ -105,13 +109,13 @@ class StageWorker(QObject):
                     self.stage_progress.emit(index, len(stages))
                 result = "전체 처리 완료: final.wav, final.mp3"
             else:
-                if self.stage in ("separate", "transcribe", "analyze"):
+                if self.stage in ("separate", "transcribe", "analyze", "basic_pitch"):
                     project = Project.load(self.path)
                     if (project.stages.get("import", {}).get("status") != "완료"
                             or not project.artifact("source.wav").is_file()):
                         self.progress.emit("선행 작업: 원곡 가져오기")
                         run_stage(self.path, "import", self.progress.emit)
-                if self.stage in ("transcribe", "analyze"):
+                if self.stage in ("transcribe", "analyze", "basic_pitch"):
                     project = Project.load(self.path)
                     if (project.stages.get("separate", {}).get("status") != "완료"
                             or not project.artifact("vocals.wav").is_file()):
@@ -141,6 +145,10 @@ class Studio(QMainWindow):
         self.audio_output = QAudioOutput(self)
         self.player.setAudioOutput(self.audio_output)
         self.audio_output.setVolume(0.8)
+        self.capture_session = None
+        self.audio_input = None
+        self.recorder = None
+        self._recording_path = None
         self._build()
         self._refresh()
 
@@ -207,6 +215,29 @@ class Studio(QMainWindow):
         layout.addLayout(buttons)
         self.bpm_label = QLabel("BPM: 분석 전")
         layout.addWidget(self.bpm_label)
+        bpm_row = QHBoxLayout()
+        bpm_row.addWidget(QLabel("직접 지정 BPM (0 = 분석값)"))
+        self.bpm_override = QDoubleSpinBox()
+        self.bpm_override.setRange(0, 360)
+        self.bpm_override.setDecimals(2)
+        self.bpm_override.setSingleStep(1)
+        bpm_row.addWidget(self.bpm_override)
+        bpm_row.addWidget(QLabel("피아노롤 눈금과 MIDI 내보내기에 사용합니다. 실제 음표 시각은 따로 편집하세요."))
+        layout.addLayout(bpm_row)
+        grid_row = QHBoxLayout()
+        grid_row.addWidget(QLabel("첫 박 시각 (초)"))
+        self.beat_offset = QDoubleSpinBox()
+        self.beat_offset.setRange(-30, 300)
+        self.beat_offset.setDecimals(3)
+        self.beat_offset.setSingleStep(.05)
+        grid_row.addWidget(self.beat_offset)
+        grid_row.addWidget(QLabel("한 마디의 박 수"))
+        self.beats_per_bar = QSpinBox()
+        self.beats_per_bar.setRange(2, 12)
+        self.beats_per_bar.setValue(4)
+        grid_row.addWidget(self.beats_per_bar)
+        grid_row.addStretch()
+        layout.addLayout(grid_row)
         self.structure_label = QLabel("구간: 분석 전")
         layout.addWidget(self.structure_label)
         layout.addWidget(QLabel("원곡 가사 인식 결과 (직접 수정 가능)"))
@@ -218,11 +249,15 @@ class Studio(QMainWindow):
         self.original_syllables_table.setHorizontalHeaderLabels(["음절", "시작", "끝", "대응 음표"])
         self.original_syllables_table.setMinimumHeight(120)
         layout.addWidget(self.original_syllables_table)
-        layout.addWidget(QLabel("음표 편집: 시작(초) · 끝(초) · MIDI 음정"))
+        numeric_toggle = QPushButton("고급 숫자 편집 표 펼치기 / 접기")
+        layout.addWidget(numeric_toggle)
+        numeric_editor = QWidget()
+        numeric_layout = QVBoxLayout(numeric_editor)
+        numeric_layout.addWidget(QLabel("음표 숫자 편집: 시작(초) · 끝(초) · MIDI 음정"))
         self.notes_table = QTableWidget(0, 3)
         self.notes_table.setHorizontalHeaderLabels(["시작", "끝", "MIDI"])
         self.notes_table.setMinimumHeight(150)
-        layout.addWidget(self.notes_table)
+        numeric_layout.addWidget(self.notes_table)
         note_row = QHBoxLayout()
         add_note = QPushButton("음표 추가")
         add_note.clicked.connect(lambda: self.notes_table.insertRow(self.notes_table.rowCount()))
@@ -234,7 +269,30 @@ class Studio(QMainWindow):
         save_notes = QPushButton("음표 저장")
         save_notes.clicked.connect(self.save_notes)
         note_row.addWidget(save_notes)
-        layout.addLayout(note_row)
+        numeric_layout.addLayout(note_row)
+        layout.addWidget(numeric_editor)
+        numeric_editor.hide()
+        numeric_toggle.clicked.connect(lambda: numeric_editor.setVisible(not numeric_editor.isVisible()))
+        roll_row = QHBoxLayout()
+        roll = QPushButton("피아노롤에서 음표 편집")
+        roll.clicked.connect(self.open_piano_roll)
+        roll_row.addWidget(roll)
+        midi_in = QPushButton("MIDI 가져오기")
+        midi_in.clicked.connect(self.import_midi)
+        roll_row.addWidget(midi_in)
+        midi_out = QPushButton("OpenUtau용 MIDI 내보내기")
+        midi_out.clicked.connect(self.export_midi)
+        roll_row.addWidget(midi_out)
+        layout.addLayout(roll_row)
+        pitch_row = QHBoxLayout()
+        basic = QPushButton("Basic Pitch로 보컬→MIDI 초안")
+        basic.clicked.connect(lambda: self.run("basic_pitch"))
+        pitch_row.addWidget(basic)
+        candidate = QPushButton("Basic Pitch 초안 검토")
+        candidate.clicked.connect(lambda: self.open_piano_roll(candidate=True))
+        pitch_row.addWidget(candidate)
+        layout.addLayout(pitch_row)
+        layout.addWidget(QLabel("자동 추출은 초안입니다. 피아노롤에서 음표·박자를 고친 뒤 저장하세요."))
         previews = QHBoxLayout()
         for title, name in (("보컬 듣기", "vocals.wav"), ("반주 듣기", "instrumental.wav")):
             button = QPushButton(title)
@@ -271,13 +329,23 @@ class Studio(QMainWindow):
         layout.addLayout(row)
         self.fit_label = QLabel("적합도: 분석 전")
         layout.addWidget(self.fit_label)
-        layout.addWidget(QLabel("음절 정렬 편집: 음절 · 시작(초) · 끝(초) · MIDI"))
+        roll = QPushButton("피아노롤에서 음절 타이밍·음정 편집")
+        roll.clicked.connect(self.open_alignment_roll)
+        layout.addWidget(roll)
+        alignment_toggle = QPushButton("고급 음절 숫자 편집 표 펼치기 / 접기")
+        layout.addWidget(alignment_toggle)
+        alignment_editor = QWidget()
+        alignment_layout = QVBoxLayout(alignment_editor)
+        alignment_layout.addWidget(QLabel("음절 숫자 편집: 음절 · 시작(초) · 끝(초) · MIDI"))
         self.alignment_table = QTableWidget(0, 4)
         self.alignment_table.setHorizontalHeaderLabels(["음절", "시작", "끝", "MIDI"])
-        layout.addWidget(self.alignment_table)
+        alignment_layout.addWidget(self.alignment_table)
         save_alignment = QPushButton("음절 타이밍·음정 저장")
         save_alignment.clicked.connect(self.save_alignment)
-        layout.addWidget(save_alignment)
+        alignment_layout.addWidget(save_alignment)
+        layout.addWidget(alignment_editor)
+        alignment_editor.hide()
+        alignment_toggle.clicked.connect(lambda: alignment_editor.setVisible(not alignment_editor.isVisible()))
         return page
 
     def _voice_tab(self):
@@ -339,8 +407,9 @@ class Studio(QMainWindow):
         layout.addLayout(protect_row)
         layout.addWidget(QLabel("음색 변환에 사용할 노래 보컬"))
         self.conversion_source = QComboBox()
-        self.conversion_source.addItem("앱이 합성한 보컬 (singing.wav)", "synth")
-        self.conversion_source.addItem("직접 녹음한 보컬 파일", "recording")
+        self.conversion_source.addItem("앱이 로컬에서 합성한 가이드 보컬", "synth")
+        self.conversion_source.addItem("내가 직접 노래한 녹음", "recording")
+        self.conversion_source.addItem("OpenUtau·외부 툴에서 만든 보컬", "openutau")
         layout.addWidget(self.conversion_source)
         recording_row = QHBoxLayout()
         self.guide_vocal_edit = QLineEdit()
@@ -353,7 +422,23 @@ class Studio(QMainWindow):
         preview_recording.clicked.connect(lambda: self.play(self.guide_vocal_edit.text().strip()))
         recording_row.addWidget(preview_recording)
         layout.addLayout(recording_row)
-        layout.addWidget(QLabel("녹음 파일은 원곡 반주와 시작 시각을 맞추고 반주 소리는 빼 주세요. 부른 음정을 유지하려면 음높이 0."))
+        record_row = QHBoxLayout()
+        self.record_button = QPushButton("마이크 녹음 시작")
+        self.record_button.clicked.connect(self.toggle_recording)
+        record_row.addWidget(self.record_button)
+        self.record_status = QLabel("헤드폰으로 반주를 들으며 보컬만 녹음하세요")
+        record_row.addWidget(self.record_status)
+        layout.addLayout(record_row)
+        offset_row = QHBoxLayout()
+        offset_row.addWidget(QLabel("외부 보컬 시작 위치 조정 (초, +는 늦게 시작)"))
+        self.guide_offset = QDoubleSpinBox()
+        self.guide_offset.setRange(-30, 30)
+        self.guide_offset.setDecimals(2)
+        self.guide_offset.setSingleStep(.05)
+        offset_row.addWidget(self.guide_offset)
+        layout.addLayout(offset_row)
+        layout.addWidget(QLabel("직접 부른 녹음은 발음·박자·음높이를 그대로 따라가며 RVC가 음색을 바꿉니다. 보컬만 있는 파일을 원곡 반주와 시각을 맞춰 넣고 변환 음높이는 0부터 시험하세요."))
+        layout.addWidget(QLabel("로컬 합성은 녹음·가창 보이스뱅크보다 발음과 박자 표현이 떨어질 수 있습니다. 외부 서비스 사용 없이도 동작합니다."))
         layout.addStretch()
         return page
 
@@ -367,6 +452,10 @@ class Studio(QMainWindow):
         self.singing_engine.addItem("기존 DiffSingerKR (음표 중심)", "diffsinger")
         engine_row.addWidget(self.singing_engine)
         layout.addLayout(engine_row)
+        self.trim_tts = QCheckBox("로컬 TTS 단어 앞·뒤 무음 제거 (박자 지연 보정)")
+        self.follow_pitch = QCheckBox("분리된 원곡 보컬의 음높이 곡선 적용")
+        layout.addWidget(self.trim_tts)
+        layout.addWidget(self.follow_pitch)
         grid = QGridLayout()
         self.stage_status = {}
         for i, stage in enumerate(STAGES):
@@ -446,6 +535,9 @@ class Studio(QMainWindow):
         guide = QPushButton("설치 안내 열기")
         guide.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(ROOT / "INSTALL.md"))))
         layout.addWidget(guide)
+        basic_install = QPushButton("Basic Pitch 선택 설치")
+        basic_install.clicked.connect(lambda: self.run("install_basic_pitch"))
+        layout.addWidget(basic_install)
         return page
 
     def refresh_models(self):
@@ -457,6 +549,7 @@ class Studio(QMainWindow):
             "Demucs": ROOT / "models" / "torch" / "hub" / "checkpoints" / "955717e8-8726e21a.th",
             "Whisper": ROOT / "models" / "faster-whisper-base" / "model.bin",
             "FFmpeg": ROOT / "external" / "ffmpeg" / "ffmpeg.exe",
+            "Basic Pitch (선택)": ROOT / ".venv-basicpitch" / "Scripts" / "basic-pitch.exe",
         }
         lines = [f"{name}: {'설치됨' if path.is_file() else '없음'}\n  {path}" for name, path in checks.items()]
         try:
@@ -486,14 +579,22 @@ class Studio(QMainWindow):
         self.voice_pitch.setValue(self.project.conversion_pitch_semitones)
         self.voice_protect.setValue(self.project.conversion_protect)
         self.singing_engine.setCurrentIndex(max(0, self.singing_engine.findData(self.project.singing_engine)))
+        self.trim_tts.setChecked(self.project.trim_tts_silence)
+        self.follow_pitch.setChecked(self.project.follow_original_pitch)
         self.conversion_source.setCurrentIndex(max(0, self.conversion_source.findData(self.project.conversion_source)))
         self.guide_vocal_edit.setText(self.project.guide_vocal)
+        self.guide_offset.setValue(self.project.guide_offset_seconds)
         self.vocal_gain.setValue(round(self.project.vocal_gain * 100))
         self.instrumental_gain.setValue(round(self.project.instrumental_gain * 100))
         self.reverb.setValue(round(self.project.reverb * 100))
         self.segment_start.setValue(self.project.segment_start)
         self.segment_end.setValue(self.project.segment_end)
-        self.bpm_label.setText(f"BPM: {self.project.analysis.get('bpm', '분석 전')}")
+        self.bpm_override.setValue(self.project.bpm_override)
+        self.beat_offset.setValue(self.project.beat_offset_seconds)
+        self.beats_per_bar.setValue(self.project.beats_per_bar)
+        detected = self.project.analysis.get("bpm", "분석 전")
+        applied = self.project.bpm_override or detected
+        self.bpm_label.setText(f"BPM: 분석 {detected} · 적용 {applied}")
         sections = self.project.analysis.get("sections", [])
         self.structure_label.setText("구간: " + (" · ".join(
             f"{item['start']:.1f}-{item['end']:.1f}s {item['label']}" for item in sections[:5])
@@ -539,6 +640,10 @@ class Studio(QMainWindow):
                 self.project.stages.pop(stage, None)
             if self.singing_engine.currentData() == "korean_tts" and self.conversion_source.currentData() == "synth":
                 self.voice_pitch.setValue(0)
+        if (self.trim_tts.isChecked() != self.project.trim_tts_silence or
+                self.follow_pitch.isChecked() != self.project.follow_original_pitch):
+            for stage in ("sing", "convert", "mix"):
+                self.project.stages.pop(stage, None)
         if self.original_text.toPlainText() != self.project.original_lyrics:
             self.project.analysis.pop("original_syllables", None)
             self.project.analysis.pop("syllable_timing_method", None)
@@ -557,7 +662,8 @@ class Studio(QMainWindow):
                 self.voice_pitch.value() != self.project.conversion_pitch_semitones or
                 self.voice_protect.value() != self.project.conversion_protect or
                 self.conversion_source.currentData() != self.project.conversion_source or
-                self.guide_vocal_edit.text().strip() != self.project.guide_vocal):
+                self.guide_vocal_edit.text().strip() != self.project.guide_vocal or
+                self.guide_offset.value() != self.project.guide_offset_seconds):
             for stage in ("convert", "mix"):
                 self.project.stages.pop(stage, None)
         if (self.vocal_gain.value() / 100 != self.project.vocal_gain or
@@ -566,6 +672,9 @@ class Studio(QMainWindow):
             self.project.stages.pop("mix", None)
         self.project.original_lyrics = self.original_text.toPlainText()
         self.project.source_language = self.source_language.currentData()
+        self.project.bpm_override = self.bpm_override.value()
+        self.project.beat_offset_seconds = self.beat_offset.value()
+        self.project.beats_per_bar = self.beats_per_bar.value()
         self.project.parody_lyrics = self.parody_text.toPlainText()
         self.project.theme = self.theme.text()
         self.project.lyric_style = self.style.currentText()
@@ -579,7 +688,10 @@ class Studio(QMainWindow):
         self.project.conversion_protect = self.voice_protect.value()
         self.project.conversion_source = self.conversion_source.currentData()
         self.project.guide_vocal = self.guide_vocal_edit.text().strip()
+        self.project.guide_offset_seconds = self.guide_offset.value()
         self.project.singing_engine = self.singing_engine.currentData()
+        self.project.trim_tts_silence = self.trim_tts.isChecked()
+        self.project.follow_original_pitch = self.follow_pitch.isChecked()
         self.project.vocal_gain = self.vocal_gain.value() / 100
         self.project.instrumental_gain = self.instrumental_gain.value() / 100
         self.project.reverb = self.reverb.value() / 100
@@ -587,6 +699,9 @@ class Studio(QMainWindow):
         self.project.segment_end = self.segment_end.value()
 
     def new_project(self):
+        if self.recorder and self.recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
+            QMessageBox.warning(self, "녹음 중", "녹음을 중지한 뒤 프로젝트를 바꿔 주세요.")
+            return
         directory = QFileDialog.getExistingDirectory(self, "프로젝트 저장 폴더 선택", str(ROOT / "outputs"))
         if not directory:
             return
@@ -600,11 +715,17 @@ class Studio(QMainWindow):
         self._refresh()
 
     def open_project(self):
+        if self.recorder and self.recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
+            QMessageBox.warning(self, "녹음 중", "녹음을 중지한 뒤 프로젝트를 바꿔 주세요.")
+            return
         path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", str(ROOT / "outputs"), "Project (*.json)")
         if path:
             self.load_project(Path(path))
 
     def load_project(self, path: Path):
+        if self.recorder and self.recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
+            QMessageBox.warning(self, "녹음 중", "녹음을 중지한 뒤 프로젝트를 바꿔 주세요.")
+            return
         try:
             self.project = Project.load(path)
             remember(path)
@@ -636,6 +757,117 @@ class Studio(QMainWindow):
             self.wave.set_file(Path(path))
             if self.project.path:
                 self.save_project()
+
+    def _table_notes(self) -> list[dict]:
+        notes = []
+        for row in range(self.notes_table.rowCount()):
+            start_item, end_item, pitch_item = (self.notes_table.item(row, column) for column in range(3))
+            if any(item is None for item in (start_item, end_item, pitch_item)):
+                raise ValueError(f"{row + 1}행의 음표 값이 비어 있습니다")
+            note = {"start": float(start_item.text()), "end": float(end_item.text()),
+                    "midi": int(pitch_item.text())}
+            if note["start"] < 0 or note["end"] <= note["start"] or not 24 <= note["midi"] <= 108:
+                raise ValueError(f"{row + 1}행의 시작·끝·음높이를 확인하세요")
+            notes.append(note)
+        return notes
+
+    def open_piano_roll(self, candidate: bool = False, imported: list[dict] | None = None,
+                        imported_bpm: float | None = None):
+        if candidate:
+            notes = self.project.analysis.get("basic_pitch_notes", [])
+            if not notes:
+                QMessageBox.information(self, "Basic Pitch", "먼저 보컬에서 MIDI 초안을 생성하세요.")
+                return
+        elif imported is not None:
+            notes = imported
+        else:
+            try:
+                notes = self._table_notes()
+            except (ValueError, AttributeError) as exc:
+                QMessageBox.warning(self, "음표 오류", str(exc))
+                return
+        bpm = self.bpm_override.value() or imported_bpm or self.project.analysis.get("bpm") or 120.
+        dialog = PianoRollDialog(notes, bpm, self, self.beat_offset.value(),
+                                 self.beats_per_bar.value())
+        while dialog.exec() == QDialog.DialogCode.Accepted:
+            edited = dialog.notes()
+            if not edited:
+                QMessageBox.warning(self, "음표 오류", "음표를 하나 이상 입력하세요.")
+                continue
+            if any(a["end"] > b["start"] for a, b in zip(edited, edited[1:])):
+                QMessageBox.warning(self, "음표 겹침", "겹치는 음표를 이동하거나 삭제해 주세요. 한 번에 한 음만 합성할 수 있습니다.")
+                continue
+            self.notes_table.setRowCount(len(edited))
+            for row, note in enumerate(edited):
+                for column, key in enumerate(("start", "end", "midi")):
+                    self.notes_table.setItem(row, column, QTableWidgetItem(str(note[key])))
+            if imported_bpm and self.bpm_override.value() == 0:
+                self.bpm_override.setValue(imported_bpm)
+            self.save_notes()
+            break
+
+    def import_midi(self):
+        path, _ = QFileDialog.getOpenFileName(self, "MIDI 멜로디 가져오기", "", "MIDI (*.mid *.midi)")
+        if not path:
+            return
+        try:
+            notes, bpm = read_midi(Path(path))
+            if not notes:
+                raise ValueError("MIDI에 음표가 없습니다.")
+            self.open_piano_roll(imported=notes, imported_bpm=bpm)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "MIDI 오류", str(exc))
+
+    def open_alignment_roll(self):
+        if self.parody_text.toPlainText() != self.project.parody_lyrics:
+            QMessageBox.warning(self, "음절 정렬", "개사 가사가 바뀌었습니다. 먼저 가사 정렬을 다시 실행하세요.")
+            return
+        events = []
+        try:
+            for row in range(self.alignment_table.rowCount()):
+                events.append({"syllable": self.alignment_table.item(row, 0).text(),
+                               "start": float(self.alignment_table.item(row, 1).text()),
+                               "end": float(self.alignment_table.item(row, 2).text()),
+                               "midi": int(self.alignment_table.item(row, 3).text())})
+        except (AttributeError, ValueError) as exc:
+            QMessageBox.warning(self, "음절 정렬", f"정렬 표를 확인하세요: {exc}")
+            return
+        if not events:
+            QMessageBox.information(self, "음절 정렬", "먼저 가사 정렬을 실행하세요.")
+            return
+        bpm = self.bpm_override.value() or self.project.analysis.get("bpm") or 120.
+        dialog = PianoRollDialog(events, bpm, self, self.beat_offset.value(),
+                                 self.beats_per_bar.value(), allow_note_count_changes=False)
+        while dialog.exec() == QDialog.DialogCode.Accepted:
+            edited = dialog.notes()
+            if [item["syllable"] for item in edited] != [item["syllable"] for item in events]:
+                QMessageBox.warning(self, "음절 순서", "음절 순서가 바뀌었습니다. 음표를 제자리로 옮겨 주세요.")
+                continue
+            if any(a["end"] > b["start"] for a, b in zip(edited, edited[1:])):
+                QMessageBox.warning(self, "음절 겹침", "음절 구간이 겹치지 않게 조정해 주세요.")
+                continue
+            for row, item in enumerate(edited):
+                for column, key in enumerate(("syllable", "start", "end", "midi")):
+                    self.alignment_table.setItem(row, column, QTableWidgetItem(str(item[key])))
+            self.save_alignment()
+            break
+
+    def export_midi(self):
+        if self.project.path is None:
+            QMessageBox.warning(self, "MIDI 내보내기", "프로젝트를 먼저 저장하세요.")
+            return
+        try:
+            notes = self._table_notes()
+            if not notes:
+                raise ValueError("내보낼 음표가 없습니다.")
+            bpm = self.bpm_override.value() or self.project.analysis.get("bpm") or 120.
+            path, _ = QFileDialog.getSaveFileName(self, "OpenUtau용 MIDI 내보내기",
+                                                  str(self.project.artifact("melody.mid")), "MIDI (*.mid)")
+            if path:
+                write_midi(Path(path), notes, bpm, beats_per_bar=self.beats_per_bar.value())
+                self.statusBar().showMessage(f"MIDI 저장: {path}", 6000)
+        except (OSError, ValueError, AttributeError) as exc:
+            QMessageBox.warning(self, "MIDI 내보내기", str(exc))
 
     def save_notes(self):
         if self.project.path is None:
@@ -681,6 +913,9 @@ class Studio(QMainWindow):
                 if len(unit) != 1 or not "가" <= unit <= "힣" or start < 0 or end <= start or not 24 <= midi <= 108:
                     raise ValueError(f"{row + 1}행의 음절·시간·음정을 확인하세요")
                 events.append({"syllable": unit, "start": start, "end": end, "midi": midi})
+            from app.lyric_generation.alignment import syllables
+            if "".join(event["syllable"] for event in events) != "".join(syllables(self.parody_text.toPlainText())):
+                raise ValueError("음절이 현재 개사 가사와 다릅니다. 가사 정렬을 다시 실행하세요")
             if not events or any(events[i]["end"] > events[i + 1]["start"] for i in range(len(events) - 1)):
                 raise ValueError("음절이 없거나 시간 구간이 겹칩니다")
         except (AttributeError, ValueError) as exc:
@@ -722,6 +957,55 @@ class Studio(QMainWindow):
         if path:
             self.guide_vocal_edit.setText(path)
             self.conversion_source.setCurrentIndex(self.conversion_source.findData("recording"))
+
+    def toggle_recording(self):
+        if self.recorder and self.recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
+            self.record_status.setText("녹음 저장 중…")
+            self.recorder.stop()
+            return
+        if self.project.path is None:
+            self.new_project()
+            if self.project.path is None:
+                return
+        if not QMediaDevices.audioInputs():
+            QMessageBox.warning(self, "마이크 없음", "사용 가능한 마이크가 없습니다. Windows 입력 장치를 확인하세요.")
+            return
+        self.capture_session = QMediaCaptureSession(self)
+        self.audio_input = QAudioInput(QMediaDevices.defaultAudioInput(), self)
+        self.recorder = QMediaRecorder(self)
+        self.capture_session.setAudioInput(self.audio_input)
+        self.capture_session.setRecorder(self.recorder)
+        media_format = QMediaFormat()
+        media_format.setFileFormat(QMediaFormat.FileFormat.Wave)
+        media_format.setAudioCodec(QMediaFormat.AudioCodec.Wave)
+        self.recorder.setMediaFormat(media_format)
+        self._recording_path = self.project.artifact(
+            f"guide_take_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav")
+        self.recorder.setOutputLocation(QUrl.fromLocalFile(str(self._recording_path)))
+        self.recorder.errorOccurred.connect(self._recording_error)
+        self.recorder.recorderStateChanged.connect(self._recording_state_changed)
+        self.recorder.record()
+        self.record_button.setText("마이크 녹음 중지")
+        self.record_status.setText(f"녹음 중: {self._recording_path.name}")
+
+    def _recording_error(self, error, message):
+        self._recording_path = None
+        self.record_button.setText("마이크 녹음 시작")
+        self.record_status.setText(f"녹음 실패: {message}")
+
+    def _recording_state_changed(self, state):
+        if state != QMediaRecorder.RecorderState.StoppedState or not self._recording_path:
+            return
+        path = Path(self.recorder.actualLocation().toLocalFile() or self._recording_path)
+        self._recording_path = None
+        self.record_button.setText("마이크 녹음 시작")
+        if path.is_file() and path.stat().st_size > 0:
+            self.guide_vocal_edit.setText(str(path))
+            self.conversion_source.setCurrentIndex(self.conversion_source.findData("recording"))
+            self.record_status.setText(f"녹음 저장: {path.name}")
+            self.save_project()
+        else:
+            self.record_status.setText("녹음 파일이 저장되지 않았습니다. 마이크 권한을 확인하세요.")
 
     def train_voice(self):
         if not self.voice_consent.isChecked():
@@ -786,7 +1070,7 @@ class Studio(QMainWindow):
             self.new_project()
             if self.project.path is None:
                 return
-        if stage in ("import", "separate", "transcribe", "analyze", "all") and not self.project.source:
+        if stage in ("import", "separate", "transcribe", "analyze", "basic_pitch", "all") and not self.project.source:
             self.choose_source()
             if not self.project.source:
                 self.statusBar().showMessage("원곡 파일을 선택하면 작업을 시작합니다", 5000)

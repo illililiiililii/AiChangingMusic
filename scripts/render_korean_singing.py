@@ -91,7 +91,9 @@ def render(project_path: Path, output_path: Path) -> dict:
             last = first + len(word)
             phrase = aligned[first:last]
             target_start, target_end = phrase[0]["start"], phrase[-1]["end"]
-            audio = trim_tts_silence(tts.synthesize(word).astype("float32"))
+            audio = tts.synthesize(word).astype("float32")
+            if data.get("trim_tts_silence", True):
+                audio = trim_tts_silence(audio)
             samples = stretch(audio, target_end - target_start)
             start = round(target_start * SAMPLE_RATE)
             end = min(start + len(samples), len(output))
@@ -104,7 +106,8 @@ def render(project_path: Path, output_path: Path) -> dict:
     if peak > .98:
         output *= .98 / peak
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if data.get("singing_engine") == "korean_tts" and (project_path.parent / "vocals.wav").is_file():
+    if (data.get("follow_original_pitch", True)
+            and (project_path.parent / "vocals.wav").is_file()):
         from scripts.match_original_vocal import follow_pitch, original_f0
         print("=== 원곡 보컬 음높이 추적", flush=True)
         output = follow_pitch(output, original_f0(project_path.parent / "vocals.wav"), SAMPLE_RATE)

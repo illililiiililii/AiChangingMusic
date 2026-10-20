@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-STAGES = ("import", "separate", "transcribe", "analyze", "generate", "lyrics", "train", "sing", "sing_segment", "convert", "mix")
+STAGES = ("import", "separate", "transcribe", "analyze", "install_basic_pitch", "basic_pitch", "generate", "lyrics", "train", "sing", "sing_segment", "convert", "mix")
 
 
 @dataclass
@@ -15,6 +15,9 @@ class Project:
     name: str = "새 프로젝트"
     source: str = ""
     source_language: str = "ko"
+    bpm_override: float = 0.0
+    beat_offset_seconds: float = 0.0
+    beats_per_bar: int = 4
     original_lyrics: str = ""
     parody_lyrics: str = ""
     theme: str = ""
@@ -29,7 +32,10 @@ class Project:
     conversion_protect: float = 0.2
     conversion_source: str = "synth"
     guide_vocal: str = ""
+    guide_offset_seconds: float = 0.0
     singing_engine: str = "korean_tts"
+    follow_original_pitch: bool = True
+    trim_tts_silence: bool = True
     vocal_gain: float = 1.0
     instrumental_gain: float = 0.8
     reverb: float = 0.08

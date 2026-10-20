@@ -15,12 +15,53 @@ from app.core.pipeline import run_stage
 from app.core.project import Project
 from app.lyric_generation.alignment import align
 from app.music_analysis.syllables import estimate_syllables
+from app.music_analysis.midi_io import read_midi, write_midi, monophonic_draft
 from app.mixing.render import render_mix
 from scripts.render_singing import phrase_inputs
 from scripts.render_korean_singing import SAMPLE_RATE, score_lines, trim_tts_silence
 
 
 class IntegrationTest(unittest.TestCase):
+    def test_midi_round_trip_uses_selected_bpm_and_seconds(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "melody.mid"
+            notes = [{"start": .125, "end": .375, "midi": 60},
+                     {"start": .5, "end": .85, "midi": 64}]
+            write_midi(path, notes, 180, ["가", "나"])
+            loaded, bpm = read_midi(path)
+            self.assertAlmostEqual(bpm, 180, places=2)
+            self.assertEqual([note["midi"] for note in loaded], [60, 64])
+            self.assertAlmostEqual(loaded[0]["start"], .125, delta=.002)
+            self.assertAlmostEqual(loaded[1]["end"], .85, delta=.002)
+            draft = monophonic_draft([
+                {"start": .0, "end": .4, "midi": 60, "velocity": 90},
+                {"start": .1, "end": .3, "midi": 72, "velocity": 40},
+                {"start": .5, "end": .9, "midi": 64, "velocity": 80}])
+            self.assertEqual([note["midi"] for note in draft], [60, 64])
+
+    def test_basic_pitch_keeps_edited_notes_as_separate_candidate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            root = folder / "app"
+            executable = root / ".venv-basicpitch" / "Scripts" / "basic-pitch.exe"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            project = Project(path=folder / "song" / "project.json")
+            project.analysis["notes"] = [{"start": 1., "end": 1.5, "midi": 60}]
+            project.save()
+            project.artifact("vocals.wav").touch()
+
+            def make_midi(command, **_):
+                output = Path(command[1])
+                write_midi(output / "candidate.mid",
+                           [{"start": 2., "end": 2.5, "midi": 64}], 120)
+
+            with patch("app.core.pipeline.ROOT", root), patch("app.core.pipeline._run", side_effect=make_midi):
+                run_stage(project.path, "basic_pitch")
+            loaded = Project.load(project.path)
+            self.assertEqual(loaded.analysis["notes"][0]["midi"], 60)
+            self.assertEqual(loaded.analysis["basic_pitch_notes"][0]["midi"], 64)
+
     def test_korean_tts_padding_is_trimmed_before_time_stretch(self):
         tone = .1 * np.sin(2 * np.pi * 220 * np.arange(SAMPLE_RATE // 5) / SAMPLE_RATE)
         padded = np.concatenate((np.zeros(SAMPLE_RATE // 3), tone, np.zeros(SAMPLE_RATE // 3)))
@@ -176,7 +217,12 @@ class IntegrationTest(unittest.TestCase):
         window = Studio()
         self.assertEqual(window.tabs.count(), 5)
         self.assertIn("원곡", window.tabs.tabText(0))
-        self.assertEqual(window.conversion_source.count(), 2)
+        self.assertEqual(window.conversion_source.count(), 3)
+        window.bpm_override.setValue(180)
+        window.beat_offset.setValue(18.9)
+        window._sync()
+        self.assertEqual(window.project.bpm_override, 180)
+        self.assertEqual(window.project.beat_offset_seconds, 18.9)
         window.conversion_source.setCurrentIndex(window.conversion_source.findData("recording"))
         window.guide_vocal_edit.setText("C:/guide.wav")
         window._sync()
@@ -190,6 +236,50 @@ class IntegrationTest(unittest.TestCase):
         window._sync()
         self.assertEqual(window.voice_pitch.value(), 0)
         window.close()
+
+    def test_piano_roll_mouse_edits_notes(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtCore import Qt, QPoint
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+        from app.gui.piano_roll import PianoRollDialog
+        app = QApplication.instance() or QApplication([])
+        dialog = PianoRollDialog([{"start": 1., "end": 1.4, "midi": 60}], 180)
+        dialog.show()
+        app.processEvents()
+        view = dialog.view
+        empty = view.mapFromScene(view.time_x(3), view.pitch_y(64) + 5)
+        QTest.mouseDClick(view.viewport(), Qt.MouseButton.LeftButton, pos=empty)
+        self.assertEqual(len(dialog.notes()), 2)
+        first = view.items_list[0]
+        point = view.mapFromScene(first.scenePos().x() + 10, first.scenePos().y() + 5)
+        QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=point)
+        QTest.mouseMove(view.viewport(), point + QPoint(30, -18))
+        QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=point + QPoint(30, -18))
+        self.assertGreater(dialog.notes()[0]["start"], 1.)
+        self.assertEqual(dialog.notes()[0]["midi"], 61)
+        dialog.undo()
+        self.assertEqual(dialog.notes()[0]["midi"], 60)
+        dialog.close()
+
+    def test_piano_roll_save_updates_project_notes(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QDialog
+        from app.gui.main import Studio
+        from app.gui.piano_roll import PianoRollDialog
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project.json"
+            project = Project(path=path)
+            project.analysis["notes"] = [{"start": 1., "end": 1.5, "midi": 60}]
+            project.save()
+            window = Studio()
+            window.load_project(path)
+            with patch.object(PianoRollDialog, "exec", return_value=QDialog.DialogCode.Accepted):
+                window.open_piano_roll()
+            self.assertEqual(Project.load(path).analysis["notes"][0]["midi"], 60)
+            self.assertEqual(Project.load(path).analysis["notes"][0]["start"], 1.)
+            window.close()
 
 
 if __name__ == "__main__":
