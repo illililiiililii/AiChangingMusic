@@ -425,14 +425,15 @@ class Studio(QMainWindow):
         self.conversion_source.addItem("내가 직접 노래한 녹음", "recording")
         self.conversion_source.addItem("OpenUtau·외부 툴에서 만든 보컬", "openutau")
         layout.addWidget(self.conversion_source)
-        self.recording_keep_pitch = QCheckBox("녹음한 발음·박자·음높이 그대로 따라가기 (기본)")
-        self.recording_keep_pitch.setToolTip("RVC 피치 변경을 0으로 적용합니다. 아래 음높이 설정값은 보관되지만 이 옵션을 끄기 전에는 적용되지 않습니다.")
+        self.recording_keep_pitch = QCheckBox("녹음 음높이 유지 (피치 변경 0, 기본)")
+        self.recording_keep_pitch.setToolTip("녹음의 발음·박자는 그대로 가이드로 사용합니다. 음높이 값을 조절하면 이 옵션이 자동으로 꺼집니다.")
         layout.addWidget(self.recording_keep_pitch)
         self.recording_split_audio = QCheckBox("긴 녹음 자동 분할·경계 페이드 사용 (선택)")
         self.recording_split_audio.setToolTip("메모리 부담을 줄이고 구간별 진행률을 표시합니다. 끄면 전체를 한 번에 변환하며 긴 녹음에서는 GPU 메모리가 부족할 수 있습니다.")
         layout.addWidget(self.recording_split_audio)
         self.conversion_source.currentIndexChanged.connect(self._update_recording_options)
         self.recording_keep_pitch.toggled.connect(self._update_recording_options)
+        self.voice_pitch.valueChanged.connect(self._on_voice_pitch_changed)
         recording_row = QHBoxLayout()
         self.guide_vocal_edit = QLineEdit()
         self.guide_vocal_edit.setPlaceholderText("반주에 맞춰 부른 보컬만 있는 WAV/MP3/FLAC/OGG")
@@ -474,7 +475,12 @@ class Studio(QMainWindow):
         direct = self.conversion_source.currentData() in ("recording", "openutau")
         self.recording_keep_pitch.setEnabled(direct)
         self.recording_split_audio.setEnabled(direct)
-        self.voice_pitch.setEnabled(not direct or not self.recording_keep_pitch.isChecked())
+
+    def _on_voice_pitch_changed(self, value):
+        if (not getattr(self, "_restoring_voice_pitch", False) and value != 0
+                and self.conversion_source.currentData() in ("recording", "openutau")
+                and self.recording_keep_pitch.isChecked()):
+            self.recording_keep_pitch.setChecked(False)
 
     def _render_tab(self):
         page, layout = QWidget(), QVBoxLayout()
@@ -621,7 +627,11 @@ class Studio(QMainWindow):
         self.voice_files.setText(self.project.voice_source)
         self.voice_consent.setChecked(self.project.voice_consent)
         self.index_rate.setValue(self.project.conversion_index_rate)
-        self.voice_pitch.setValue(self.project.conversion_pitch_semitones)
+        self._restoring_voice_pitch = True
+        try:
+            self.voice_pitch.setValue(self.project.conversion_pitch_semitones)
+        finally:
+            self._restoring_voice_pitch = False
         self.voice_protect.setValue(self.project.conversion_protect)
         self.singing_engine.setCurrentIndex(max(0, self.singing_engine.findData(self.project.singing_engine)))
         self.trim_tts.setChecked(self.project.trim_tts_silence)
