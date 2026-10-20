@@ -305,12 +305,14 @@ def convert(project: Project, progress: Callable[[str], None] | None = None) -> 
     if not RVC_PYTHON.is_file():
         raise FileNotFoundError(".venv-rvc가 없습니다.")
     from app.core.rvc_conversion import convert_audio
+    direct = project.conversion_source in ("recording", "openutau")
     return convert_audio(source, project.artifact("converted.wav"), python=RVC_PYTHON,
                          model=model, index=index if project.conversion_index_rate > 0 else None,
-                         pitch=project.conversion_pitch_semitones,
+                         pitch=0 if direct and project.recording_keep_pitch else project.conversion_pitch_semitones,
                          index_rate=project.conversion_index_rate,
                          protect=project.conversion_protect,
-                         gpu_index=_gpu_with_free_memory(), progress=progress)
+                         gpu_index=_gpu_with_free_memory(), progress=progress,
+                         split=project.recording_split_audio if direct else True)
 
 
 def mix(project: Project) -> str:

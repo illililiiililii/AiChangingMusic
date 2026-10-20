@@ -425,6 +425,14 @@ class Studio(QMainWindow):
         self.conversion_source.addItem("내가 직접 노래한 녹음", "recording")
         self.conversion_source.addItem("OpenUtau·외부 툴에서 만든 보컬", "openutau")
         layout.addWidget(self.conversion_source)
+        self.recording_keep_pitch = QCheckBox("녹음한 발음·박자·음높이 그대로 따라가기 (기본)")
+        self.recording_keep_pitch.setToolTip("RVC 피치 변경을 0으로 적용합니다. 아래 음높이 설정값은 보관되지만 이 옵션을 끄기 전에는 적용되지 않습니다.")
+        layout.addWidget(self.recording_keep_pitch)
+        self.recording_split_audio = QCheckBox("긴 녹음 자동 분할·경계 페이드 사용 (선택)")
+        self.recording_split_audio.setToolTip("메모리 부담을 줄이고 구간별 진행률을 표시합니다. 끄면 전체를 한 번에 변환하며 긴 녹음에서는 GPU 메모리가 부족할 수 있습니다.")
+        layout.addWidget(self.recording_split_audio)
+        self.conversion_source.currentIndexChanged.connect(self._update_recording_options)
+        self.recording_keep_pitch.toggled.connect(self._update_recording_options)
         recording_row = QHBoxLayout()
         self.guide_vocal_edit = QLineEdit()
         self.guide_vocal_edit.setPlaceholderText("반주에 맞춰 부른 보컬만 있는 WAV/MP3/FLAC/OGG")
@@ -454,10 +462,19 @@ class Studio(QMainWindow):
         offset_row.addWidget(self.guide_offset)
         layout.addLayout(offset_row)
         layout.addWidget(QLabel("직접 마이크로 녹음한 파일에도 적용됩니다. +는 원곡보다 늦게, -는 녹음 앞부분을 잘라 일찍 시작합니다. 값을 바꾼 뒤 음색 변환을 다시 실행하세요."))
-        layout.addWidget(QLabel("직접 부른 녹음은 발음·박자·음높이를 그대로 따라가며 RVC가 음색을 바꿉니다. 보컬만 있는 파일을 원곡 반주와 시각을 맞춰 넣고 변환 음높이는 0부터 시험하세요."))
+        layout.addWidget(QLabel("직접 부른 녹음은 노래 합성·원곡 멜로디 추적을 거치지 않습니다. 보컬만 있는 파일을 반주와 시각을 맞춰 넣으세요."))
+        convert_recording = QPushButton("녹음 따라 음색 변환")
+        convert_recording.clicked.connect(lambda: self.run("convert"))
+        layout.addWidget(convert_recording)
         layout.addWidget(QLabel("로컬 합성은 녹음·가창 보이스뱅크보다 발음과 박자 표현이 떨어질 수 있습니다. 외부 서비스 사용 없이도 동작합니다."))
         layout.addStretch()
         return page
+
+    def _update_recording_options(self, *_):
+        direct = self.conversion_source.currentData() in ("recording", "openutau")
+        self.recording_keep_pitch.setEnabled(direct)
+        self.recording_split_audio.setEnabled(direct)
+        self.voice_pitch.setEnabled(not direct or not self.recording_keep_pitch.isChecked())
 
     def _render_tab(self):
         page, layout = QWidget(), QVBoxLayout()
@@ -610,6 +627,9 @@ class Studio(QMainWindow):
         self.trim_tts.setChecked(self.project.trim_tts_silence)
         self.follow_pitch.setChecked(self.project.follow_original_pitch)
         self.conversion_source.setCurrentIndex(max(0, self.conversion_source.findData(self.project.conversion_source)))
+        self.recording_keep_pitch.setChecked(self.project.recording_keep_pitch)
+        self.recording_split_audio.setChecked(self.project.recording_split_audio)
+        self._update_recording_options()
         self.guide_vocal_edit.setText(self.project.guide_vocal)
         self.guide_offset.setValue(self.project.guide_offset_seconds)
         self.vocal_gain.setValue(round(self.project.vocal_gain * 100))
@@ -690,6 +710,8 @@ class Studio(QMainWindow):
                 self.voice_pitch.value() != self.project.conversion_pitch_semitones or
                 self.voice_protect.value() != self.project.conversion_protect or
                 self.conversion_source.currentData() != self.project.conversion_source or
+                self.recording_keep_pitch.isChecked() != self.project.recording_keep_pitch or
+                self.recording_split_audio.isChecked() != self.project.recording_split_audio or
                 self.guide_vocal_edit.text().strip() != self.project.guide_vocal or
                 self.guide_offset.value() != self.project.guide_offset_seconds):
             for stage in ("convert", "mix"):
@@ -715,6 +737,8 @@ class Studio(QMainWindow):
         self.project.conversion_pitch_semitones = self.voice_pitch.value()
         self.project.conversion_protect = self.voice_protect.value()
         self.project.conversion_source = self.conversion_source.currentData()
+        self.project.recording_keep_pitch = self.recording_keep_pitch.isChecked()
+        self.project.recording_split_audio = self.recording_split_audio.isChecked()
         self.project.guide_vocal = self.guide_vocal_edit.text().strip()
         self.project.guide_offset_seconds = self.guide_offset.value()
         self.project.singing_engine = self.singing_engine.currentData()

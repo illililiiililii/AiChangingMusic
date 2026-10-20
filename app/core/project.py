@@ -31,6 +31,8 @@ class Project:
     conversion_pitch_semitones: int = 0
     conversion_protect: float = 0.2
     conversion_source: str = "synth"
+    recording_keep_pitch: bool = True
+    recording_split_audio: bool = False
     guide_vocal: str = ""
     guide_offset_seconds: float = 0.0
     singing_engine: str = "korean_tts"

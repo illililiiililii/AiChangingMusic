@@ -291,14 +291,27 @@ def _run_batch(command: list[str], *, env: dict[str, str], total: int,
 
 def convert_audio(source: Path, target: Path, *, python: Path, model: Path,
                   index: Path | None, pitch: int, index_rate: float, protect: float,
-                  gpu_index: str, progress: Callable[[str], None] | None = None) -> str:
+                  gpu_index: str, progress: Callable[[str], None] | None = None,
+                  split: bool = True) -> str:
     source = Path(source)
     if not source.is_file():
         raise FileNotFoundError(f"RVC 입력 파일이 없습니다: {source}")
     with tempfile.TemporaryDirectory(prefix="rvc-chunks-", dir=target.parent) as temporary:
         workspace = Path(temporary)
         input_dir, output_dir = workspace / "input", workspace / "output"
-        plans, source_rate, source_frames = prepare_chunks(source, input_dir)
+        if split:
+            plans, source_rate, source_frames = prepare_chunks(source, input_dir)
+        else:
+            info = sf.info(source)
+            if info.frames <= 0 or info.samplerate <= 0:
+                raise ValueError("변환 입력 오디오가 비어 있거나 샘플레이트가 올바르지 않습니다.")
+            input_dir.mkdir(parents=True, exist_ok=True)
+            with sf.SoundFile(source) as audio:
+                samples = audio.read(dtype="float32", always_2d=True).mean(axis=1)
+            sf.write(input_dir / "0001.wav", samples, info.samplerate, subtype="PCM_16")
+            plans = [{"name": "0001.wav", "core_start": 0, "core_end": info.frames,
+                      "start": 0, "end": info.frames}]
+            source_rate, source_frames = info.samplerate, info.frames
         duration = source_frames / source_rate
         env = os.environ.copy()
         env.update({"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
@@ -311,7 +324,8 @@ def convert_audio(source: Path, target: Path, *, python: Path, model: Path,
             command.extend(["--index", str(index)])
         record("convert", "입력 분석", f"입력 {source}; 길이 {duration:.2f}초; "
                f"샘플레이트 {source_rate}; 구간 {len(plans)}개; 모델 {model}; 인덱스 {index}; "
-               f"GPU {gpu_index or '자동/CPU'}; RMVPE; pitch {pitch}; protect {protect}; index rate {index_rate}")
+               f"GPU {gpu_index or '자동/CPU'}; RMVPE; pitch {pitch}; protect {protect}; index rate {index_rate}; "
+               f"자동 분할 {'사용' if split else '미사용'}")
         _run_batch(command, env=env, total=len(plans), progress=progress)
         merge_chunks(plans, output_dir, source_rate, source_frames, target)
     record("convert", "병합 완료", f"{len(plans)}개 구간; {target}; {sf.info(target).duration:.2f}초")

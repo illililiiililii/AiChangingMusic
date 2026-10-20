@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import sys
 import tempfile
@@ -214,7 +215,8 @@ class IntegrationTest(unittest.TestCase):
                 path.touch()
             project = Project(path=folder / "project.json", voice_consent=True,
                               voice_model=str(model), voice_index=str(index),
-                              conversion_source="recording", guide_vocal=str(guide))
+                              conversion_source="recording", guide_vocal=str(guide),
+                              conversion_pitch_semitones=-7)
             project.save()
             with patch("app.core.pipeline.RVC_PYTHON", rvc), \
                  patch("app.core.pipeline.decode", return_value=folder / "guide_vocal.wav") as decode_mock, \
@@ -225,7 +227,38 @@ class IntegrationTest(unittest.TestCase):
             self.assertEqual(decode_mock.call_args.kwargs["channels"], 1)
             self.assertEqual(convert_mock.call_args.args[0], folder / "guide_vocal.wav")
             self.assertEqual(convert_mock.call_args.kwargs["pitch"], 0)
+            self.assertFalse(convert_mock.call_args.kwargs["split"])
             self.assertEqual(convert_mock.call_args.kwargs["protect"], .2)
+
+    def test_recording_options_preserve_advanced_pitch_and_splitting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            guide = folder / "recorded.wav"
+            sf.write(guide, np.zeros(4410, dtype="float32"), 44100)
+            model, rvc = folder / "model.pth", folder / "python.exe"
+            model.touch()
+            rvc.touch()
+            project = Project(path=folder / "project.json", voice_consent=True,
+                              voice_model=str(model), conversion_index_rate=0,
+                              conversion_source="recording", guide_vocal=str(guide),
+                              conversion_pitch_semitones=-7, recording_keep_pitch=False,
+                              recording_split_audio=True)
+            project.save()
+            with patch("app.core.pipeline.RVC_PYTHON", rvc), \
+                 patch("app.core.pipeline.decode", return_value=guide), \
+                 patch("app.core.rvc_conversion.convert_audio", return_value="완료") as convert_mock, \
+                 patch("app.core.pipeline._gpu_with_free_memory", return_value=""):
+                run_stage(project.path, "convert")
+            self.assertEqual(convert_mock.call_args.kwargs["pitch"], -7)
+            self.assertTrue(convert_mock.call_args.kwargs["split"])
+
+            data = json.loads(project.path.read_text(encoding="utf-8"))
+            data.pop("recording_keep_pitch")
+            data.pop("recording_split_audio")
+            project.path.write_text(json.dumps(data), encoding="utf-8")
+            legacy = Project.load(project.path)
+            self.assertTrue(legacy.recording_keep_pitch)
+            self.assertFalse(legacy.recording_split_audio)
 
     def test_recording_start_offset_is_applied_before_rvc(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -295,6 +328,25 @@ class IntegrationTest(unittest.TestCase):
                 self.assertEqual(output_rate, rate)
                 self.assertEqual(len(output), len(original))
                 self.assertLess(float(np.max(np.abs(output - original))), .001)
+
+    def test_unsplit_recording_uses_one_input_and_preserves_length(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            source, target = folder / "recording.wav", folder / "converted.wav"
+            sf.write(source, np.sin(np.arange(32000) * .01).astype("float32") * .1, 16000)
+
+            def fake_batch(command, **kwargs):
+                inputs = Path(command[command.index("--input-dir") + 1])
+                outputs = Path(command[command.index("--output-dir") + 1])
+                outputs.mkdir()
+                self.assertEqual(kwargs["total"], 1)
+                self.assertEqual([path.name for path in inputs.glob("*.wav")], ["0001.wav"])
+                shutil.copyfile(inputs / "0001.wav", outputs / "0001.wav")
+
+            with patch("app.core.rvc_conversion._run_batch", side_effect=fake_batch):
+                convert_audio(source, target, python=folder / "python.exe", model=folder / "model.pth",
+                              index=None, pitch=0, index_rate=0, protect=.2, gpu_index="0", split=False)
+            self.assertEqual(sf.info(source).frames, sf.info(target).frames)
 
     def test_missing_converted_chunk_does_not_replace_existing_output(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -385,12 +437,20 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(window.project.bpm_override, 180)
         self.assertEqual(window.project.beat_offset_seconds, 18.9)
         window.conversion_source.setCurrentIndex(window.conversion_source.findData("recording"))
+        self.assertTrue(window.recording_keep_pitch.isChecked())
+        self.assertFalse(window.recording_split_audio.isChecked())
+        self.assertFalse(window.voice_pitch.isEnabled())
         window.guide_vocal_edit.setText("C:/guide.wav")
         window.guide_offset.setValue(72.5)
+        window.recording_keep_pitch.setChecked(False)
+        window.recording_split_audio.setChecked(True)
+        self.assertTrue(window.voice_pitch.isEnabled())
         window._sync()
         self.assertEqual(window.project.conversion_source, "recording")
         self.assertEqual(window.project.guide_vocal, "C:/guide.wav")
         self.assertEqual(window.project.guide_offset_seconds, 72.5)
+        self.assertFalse(window.project.recording_keep_pitch)
+        self.assertTrue(window.project.recording_split_audio)
         window.project.singing_engine = "diffsinger"
         window.project.conversion_source = "synth"
         window.project.conversion_pitch_semitones = -12
