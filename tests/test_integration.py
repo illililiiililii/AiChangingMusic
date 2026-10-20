@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +17,7 @@ import soundfile as sf
 from app.core.pipeline import run_stage
 from app.core.project import Project
 from app.core.stage_process import run_stage_process
+from app.core.rvc_conversion import convert_audio, prepare_chunks, merge_chunks, _run_batch
 from app.audio_processing.io import waveform
 from app.lyric_generation.alignment import align
 from app.music_analysis.syllables import estimate_syllables
@@ -214,14 +218,152 @@ class IntegrationTest(unittest.TestCase):
             project.save()
             with patch("app.core.pipeline.RVC_PYTHON", rvc), \
                  patch("app.core.pipeline.decode", return_value=folder / "guide_vocal.wav") as decode_mock, \
-                 patch("app.core.pipeline._run") as run_mock, \
-                 patch("app.core.pipeline._gpu_with_free_memory", return_value=""), \
-                 patch("app.core.pipeline.ffmpeg", return_value=folder / "ffmpeg.exe"):
+                 patch("app.core.rvc_conversion.convert_audio", return_value="음색 변환 완료") as convert_mock, \
+                 patch("app.core.pipeline._gpu_with_free_memory", return_value=""):
                 run_stage(project.path, "convert")
             self.assertEqual(decode_mock.call_args.args, (guide, folder / "guide_vocal.wav"))
             self.assertEqual(decode_mock.call_args.kwargs["channels"], 1)
-            command = run_mock.call_args.args[0]
-            self.assertEqual(command[command.index("--input") + 1], str(folder / "guide_vocal.wav"))
+            self.assertEqual(convert_mock.call_args.args[0], folder / "guide_vocal.wav")
+            self.assertEqual(convert_mock.call_args.kwargs["pitch"], 0)
+            self.assertEqual(convert_mock.call_args.kwargs["protect"], .2)
+
+    def test_recording_start_offset_is_applied_before_rvc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            guide = folder / "take.wav"
+            sf.write(guide, np.ones(1000, dtype="float32") * .5, 1000)
+            model, rvc = folder / "model.pth", folder / "python.exe"
+            model.touch()
+            rvc.touch()
+            project = Project(path=folder / "project.json", voice_consent=True,
+                              voice_model=str(model), conversion_index_rate=0,
+                              conversion_source="recording", guide_vocal=str(guide),
+                              guide_offset_seconds=.25)
+            project.save()
+
+            def copy_decode(original, output, **_):
+                shutil.copyfile(original, output)
+                return output
+
+            captured = []
+
+            def inspect_conversion(source, *_args, **_kwargs):
+                captured.append(sf.read(source, dtype="float32")[0])
+                return "완료"
+
+            with patch("app.core.pipeline.RVC_PYTHON", rvc), \
+                 patch("app.core.pipeline.decode", side_effect=copy_decode), \
+                 patch("app.core.rvc_conversion.convert_audio", side_effect=inspect_conversion), \
+                 patch("app.core.pipeline._gpu_with_free_memory", return_value=""):
+                run_stage(project.path, "convert")
+                updated = Project.load(project.path)
+                updated.guide_offset_seconds = -.25
+                updated.save()
+                run_stage(project.path, "convert")
+            self.assertEqual(len(captured[0]), 1250)
+            self.assertTrue(np.allclose(captured[0][:250], 0))
+            self.assertAlmostEqual(float(captured[0][250]), .5, places=2)
+            self.assertEqual(len(captured[1]), 750)
+            self.assertAlmostEqual(float(captured[1][0]), .5, places=2)
+
+    def test_chunk_conversion_keeps_length_and_boundaries_for_short_and_long_audio(self):
+        for duration, expected_chunks in ((10, 1), (30, 2), (190, 13)):
+            with self.subTest(duration=duration), tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary)
+                rate = 16000
+                source = folder / "guide.wav"
+                target = folder / "converted.wav"
+                with sf.SoundFile(source, "w", samplerate=rate, channels=1, subtype="PCM_16") as audio:
+                    for second in range(duration):
+                        t = (np.arange(rate) + second * rate) / rate
+                        audio.write((.12 * np.sin(2 * np.pi * 220 * t)).astype("float32"))
+
+                def fake_batch(command, **kwargs):
+                    inputs = Path(command[command.index("--input-dir") + 1])
+                    outputs = Path(command[command.index("--output-dir") + 1])
+                    outputs.mkdir()
+                    files = sorted(inputs.glob("*.wav"))
+                    self.assertEqual(len(files), expected_chunks)
+                    for path in files:
+                        shutil.copyfile(path, outputs / path.name)
+
+                with patch("app.core.rvc_conversion._run_batch", side_effect=fake_batch):
+                    convert_audio(source, target, python=folder / "python.exe", model=folder / "model.pth",
+                                  index=None, pitch=0, index_rate=0, protect=.2, gpu_index="0")
+                output, output_rate = sf.read(target, dtype="float32")
+                original, _ = sf.read(source, dtype="float32")
+                self.assertEqual(output_rate, rate)
+                self.assertEqual(len(output), len(original))
+                self.assertLess(float(np.max(np.abs(output - original))), .001)
+
+    def test_missing_converted_chunk_does_not_replace_existing_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            source = folder / "input.wav"
+            target = folder / "converted.wav"
+            sf.write(source, np.zeros(32000, dtype="float32"), 16000)
+            target.write_bytes(b"previous result")
+            plans, rate, frames = prepare_chunks(source, folder / "chunks", seconds=1)
+            outputs = folder / "outputs"
+            outputs.mkdir()
+            shutil.copyfile(folder / "chunks" / plans[0]["name"], outputs / plans[0]["name"])
+            with self.assertRaisesRegex(RuntimeError, "누락"):
+                merge_chunks(plans, outputs, rate, frames, target)
+            self.assertEqual(target.read_bytes(), b"previous result")
+
+    def test_stage_process_cancel_terminates_its_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Project(path=Path(temporary) / "project.json")
+            project.save()
+            cancel = threading.Event()
+            timer = threading.Timer(.3, cancel.set)
+            timer.start()
+            try:
+                with patch("app.core.stage_process._stage_command",
+                           return_value=[sys.executable, "-c", "import time;time.sleep(60)"]):
+                    with self.assertRaises(InterruptedError):
+                        run_stage_process(project.path, "convert", cancel_event=cancel)
+            finally:
+                timer.cancel()
+            self.assertEqual(Project.load(project.path).stages["convert"]["status"], "중단")
+
+    def test_rvc_cancel_terminates_batch_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "cancel.flag"
+            env = os.environ.copy()
+            env["AICHANGINGMUSIC_CANCEL_FILE"] = str(marker)
+            env["CUDA_VISIBLE_DEVICES"] = ""
+            command = [sys.executable, "-c", "import time;time.sleep(60)",
+                       "--model", "test.pth", "--index-rate", "0", "--pitch", "0", "--protect", ".2"]
+            timer = threading.Timer(.3, marker.touch)
+            timer.start()
+            try:
+                with self.assertRaises(InterruptedError):
+                    _run_batch(command, env=env, total=1, progress=None)
+            finally:
+                timer.cancel()
+
+    def test_cuda_oom_is_reported_with_stderr(self):
+        command = [sys.executable, "-c",
+                   "import sys;print('CUDA out of memory',file=sys.stderr);sys.exit(1)",
+                   "--model", "test.pth", "--index-rate", "0", "--pitch", "0", "--protect", ".2"]
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = "0"
+        updates = []
+        with self.assertRaisesRegex(RuntimeError, "CUDA 오류"):
+            _run_batch(command, env=env, total=1, progress=updates.append)
+        self.assertTrue(any("CUDA 오류 감지" in update for update in updates))
+
+    def test_stall_warning_does_not_stop_running_process(self):
+        command = [sys.executable, "-c", "import time;time.sleep(2.2)",
+                   "--model", "test.pth", "--index-rate", "0", "--pitch", "0", "--protect", ".2"]
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        updates = []
+        with patch("app.core.rvc_conversion.STALL_SECONDS", 1):
+            with self.assertRaisesRegex(RuntimeError, "출력 구간 누락"):
+                _run_batch(command, env=env, total=1, progress=updates.append)
+        self.assertTrue(any("지연 감지" in update for update in updates))
 
     def test_gui_opens_offscreen(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -244,9 +386,11 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(window.project.beat_offset_seconds, 18.9)
         window.conversion_source.setCurrentIndex(window.conversion_source.findData("recording"))
         window.guide_vocal_edit.setText("C:/guide.wav")
+        window.guide_offset.setValue(72.5)
         window._sync()
         self.assertEqual(window.project.conversion_source, "recording")
         self.assertEqual(window.project.guide_vocal, "C:/guide.wav")
+        self.assertEqual(window.project.guide_offset_seconds, 72.5)
         window.project.singing_engine = "diffsinger"
         window.project.conversion_source = "synth"
         window.project.conversion_pitch_semitones = -12

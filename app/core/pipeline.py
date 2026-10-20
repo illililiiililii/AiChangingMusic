@@ -275,7 +275,7 @@ def train(project: Project, progress: Callable[[str], None] | None = None) -> st
     return f"음성 프로필 학습 완료: {name}"
 
 
-def convert(project: Project) -> str:
+def convert(project: Project, progress: Callable[[str], None] | None = None) -> str:
     if not project.voice_consent:
         raise PermissionError("음성 학습·변환 허락 확인이 필요합니다.")
     model, index = Path(project.voice_model), Path(project.voice_index)
@@ -291,7 +291,7 @@ def convert(project: Project) -> str:
             audio, rate = sf.read(source, dtype="float32")
             shift = round(project.guide_offset_seconds * rate)
             if shift < 0 and -shift >= len(audio):
-                raise ValueError("외부 보컬 시작 위치 조정이 녹음 길이보다 큽니다.")
+                raise ValueError("녹음 시작 위치 조정이 녹음 길이보다 큽니다.")
             audio = np.pad(audio, (shift, 0)) if shift > 0 else audio[-shift:] if shift < 0 else audio
             sf.write(source, audio, rate)
     elif project.conversion_source == "synth":
@@ -304,18 +304,13 @@ def convert(project: Project) -> str:
         raise ValueError("음색 변환 입력을 다시 선택하세요.")
     if not RVC_PYTHON.is_file():
         raise FileNotFoundError(".venv-rvc가 없습니다.")
-    target = project.artifact("converted.wav")
-    env = os.environ.copy()
-    env.update({"PATH": str(ffmpeg().parent) + os.pathsep + env.get("PATH", ""),
-                "CUDA_VISIBLE_DEVICES": _gpu_with_free_memory(), "HF_HUB_OFFLINE": "1"})
-    command = [str(RVC_PYTHON), "-m", "infer.cli", "--model", str(model), "--input", str(source),
-               "--output", str(target), "--pitch", str(project.conversion_pitch_semitones),
-               "--f0-method", "rmvpe", "--protect", str(project.conversion_protect),
-               "--index-rate", str(project.conversion_index_rate), "--overwrite"]
-    if project.conversion_index_rate > 0:
-        command.extend(["--index", str(index)])
-    _run(command, cwd=ROOT / "external" / "RVC", env=env)
-    return f"음색 변환: {target.name}"
+    from app.core.rvc_conversion import convert_audio
+    return convert_audio(source, project.artifact("converted.wav"), python=RVC_PYTHON,
+                         model=model, index=index if project.conversion_index_rate > 0 else None,
+                         pitch=project.conversion_pitch_semitones,
+                         index_rate=project.conversion_index_rate,
+                         protect=project.conversion_protect,
+                         gpu_index=_gpu_with_free_memory(), progress=progress)
 
 
 def mix(project: Project) -> str:
@@ -324,6 +319,8 @@ def mix(project: Project) -> str:
     instrumental = project.artifact("instrumental.wav")
     if not vocal.is_file() or not instrumental.is_file():
         raise ValueError("음색 변환 및 반주 분리 결과가 필요합니다.")
+    if project.stages.get("convert", {}).get("status") != "완료":
+        raise ValueError("음색 변환을 완료한 뒤 믹싱을 실행하세요.")
     wav = project.artifact("final.wav")
     render_mix(vocal, instrumental, wav, project.vocal_gain, project.instrumental_gain,
                reverb=project.reverb)
@@ -352,7 +349,7 @@ def run_stage(path: Path, stage: str, progress: Callable[[str], None] | None = N
     record(stage, "시작", f"프로젝트: {path}")
     project.mark(stage, "진행 중")
     try:
-        result = HANDLERS[stage](project, progress) if stage in ("install_basic_pitch", "basic_pitch", "train", "sing", "sing_segment") else HANDLERS[stage](project)
+        result = HANDLERS[stage](project, progress) if stage in ("install_basic_pitch", "basic_pitch", "train", "sing", "sing_segment", "convert") else HANDLERS[stage](project)
         if stage == "sing":
             for dependent in ("convert", "mix"):
                 project.stages.pop(dependent, None)

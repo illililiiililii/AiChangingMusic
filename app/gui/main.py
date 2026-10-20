@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import sys
+import json
 import subprocess
 import traceback
 import time
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -80,6 +82,10 @@ class StageWorker(QObject):
     def __init__(self, path: Path, stage: str):
         super().__init__()
         self.path, self.stage = path, stage
+        self.cancel_event = threading.Event()
+
+    def request_cancel(self):
+        self.cancel_event.set()
 
     def run(self):
         try:
@@ -103,9 +109,17 @@ class StageWorker(QObject):
                 stages = [stage for stage in stages if
                           project.stages.get(stage, {}).get("status") != "완료" or
                           (stage in expected and not project.artifact(expected[stage]).is_file())]
+                if "sing" in stages and "convert" not in stages:
+                    stages.append("convert")
+                if "convert" in stages and "mix" not in stages:
+                    stages.append("mix")
+                stages = [stage for stage in ("import", "separate", "transcribe", "analyze",
+                          "generate", "lyrics", "train", "sing", "convert", "mix") if stage in stages]
                 for index, stage in enumerate(stages, 1):
+                    if self.cancel_event.is_set():
+                        raise InterruptedError("사용자가 전체 작업을 중단했습니다.")
                     self.progress.emit(f"[{index}/{len(stages)}] {LABELS[stage]}")
-                    run_stage_process(self.path, stage, self.progress.emit)
+                    run_stage_process(self.path, stage, self.progress.emit, self.cancel_event)
                     self.stage_progress.emit(index, len(stages))
                 result = "전체 처리 완료: final.wav, final.mp3"
             else:
@@ -114,15 +128,15 @@ class StageWorker(QObject):
                     if (project.stages.get("import", {}).get("status") != "완료"
                             or not project.artifact("source.wav").is_file()):
                         self.progress.emit("선행 작업: 원곡 가져오기")
-                        run_stage_process(self.path, "import", self.progress.emit)
+                        run_stage_process(self.path, "import", self.progress.emit, self.cancel_event)
                 if self.stage in ("transcribe", "analyze", "basic_pitch"):
                     project = Project.load(self.path)
                     if (project.stages.get("separate", {}).get("status") != "완료"
                             or not project.artifact("vocals.wav").is_file()):
                         self.progress.emit("선행 작업: 보컬·반주 분리")
-                        run_stage_process(self.path, "separate", self.progress.emit)
+                        run_stage_process(self.path, "separate", self.progress.emit, self.cancel_event)
                 self.progress.emit(f"{LABELS[self.stage]} 실행 중")
-                result = run_stage_process(self.path, self.stage, self.progress.emit)
+                result = run_stage_process(self.path, self.stage, self.progress.emit, self.cancel_event)
             self.finished.emit(self.stage, result)
         except Exception:
             self.failed.emit(self.stage, traceback.format_exc())
@@ -430,13 +444,16 @@ class Studio(QMainWindow):
         record_row.addWidget(self.record_status)
         layout.addLayout(record_row)
         offset_row = QHBoxLayout()
-        offset_row.addWidget(QLabel("외부 보컬 시작 위치 조정 (초, +는 늦게 시작)"))
+        offset_row.addWidget(QLabel("직접 녹음·외부 보컬 시작 위치 (초)"))
         self.guide_offset = QDoubleSpinBox()
-        self.guide_offset.setRange(-30, 30)
+        self.guide_offset.setRange(-360, 360)
         self.guide_offset.setDecimals(2)
         self.guide_offset.setSingleStep(.05)
+        self.guide_offset.setSuffix(" 초")
+        self.guide_offset.setToolTip("0은 곡 시작과 동시에 재생합니다. +는 녹음을 늦추고, -는 녹음 앞부분을 잘라 당깁니다. 음색 변환을 다시 실행하면 적용됩니다.")
         offset_row.addWidget(self.guide_offset)
         layout.addLayout(offset_row)
+        layout.addWidget(QLabel("직접 마이크로 녹음한 파일에도 적용됩니다. +는 원곡보다 늦게, -는 녹음 앞부분을 잘라 일찍 시작합니다. 값을 바꾼 뒤 음색 변환을 다시 실행하세요."))
         layout.addWidget(QLabel("직접 부른 녹음은 발음·박자·음높이를 그대로 따라가며 RVC가 음색을 바꿉니다. 보컬만 있는 파일을 원곡 반주와 시각을 맞춰 넣고 변환 음높이는 0부터 시험하세요."))
         layout.addWidget(QLabel("로컬 합성은 녹음·가창 보이스뱅크보다 발음과 박자 표현이 떨어질 수 있습니다. 외부 서비스 사용 없이도 동작합니다."))
         layout.addStretch()
@@ -510,6 +527,17 @@ class Studio(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setRange(0, 1)
         layout.addWidget(self.progress)
+        self.convert_progress = QProgressBar()
+        self.convert_progress.setRange(0, 1000)
+        self.convert_progress.setValue(0)
+        layout.addWidget(self.convert_progress)
+        self.convert_status = QLabel("음색 변환 대기 중")
+        self.convert_status.setWordWrap(True)
+        layout.addWidget(self.convert_status)
+        self.cancel_button = QPushButton("현재 작업 중단")
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self.cancel_work)
+        layout.addWidget(self.cancel_button)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         layout.addWidget(self.log)
@@ -1085,6 +1113,11 @@ class Studio(QMainWindow):
         self.project.save()
         record("gui", "작업 요청", f"{stage}: {self.project.path}")
         self.progress.setRange(0, 0)
+        self.cancel_button.setEnabled(True)
+        self.cancel_button.setText("현재 작업 중단")
+        if stage in ("convert", "all"):
+            self.convert_progress.setValue(0)
+            self.convert_status.setText("RVC 변환 준비 중")
         self.log.appendPlainText(f"▶ {LABELS[stage]}")
         if stage == "train":
             self._train_started = time.monotonic()
@@ -1110,6 +1143,13 @@ class Studio(QMainWindow):
         self.thread.finished.connect(self.thread.deleteLater)
         self.thread.start()
 
+    def cancel_work(self):
+        if self.worker is not None and self._active_stage is not None:
+            self.worker.request_cancel()
+            self.cancel_button.setEnabled(False)
+            self.cancel_button.setText("중단 처리 중…")
+            self.statusBar().showMessage("작업과 하위 프로세스를 중단하는 중입니다")
+
     @Slot(str, str)
     def _done_result(self, stage: str, result: str):
         if stage == "train":
@@ -1124,6 +1164,31 @@ class Studio(QMainWindow):
 
     @Slot(str)
     def _show_progress(self, message: str):
+        if message.startswith("RVC_PROGRESS "):
+            try:
+                data = json.loads(message[len("RVC_PROGRESS "):])
+                completed = int(data["completed"])
+                total = int(data["total"])
+                current = int(data["current"])
+                percent = float(data["percent"])
+                elapsed = int(data["elapsed"])
+                eta = data.get("eta")
+                warning = str(data.get("warning") or "")
+                elapsed_text = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+                eta_text = "계산 중" if eta is None else f"{int(eta) // 60:02d}:{int(eta) % 60:02d}"
+                self.convert_progress.setValue(round(percent * 10))
+                self.convert_status.setText(
+                    f"전체 구간: {total}개 · 현재 구간: {current}/{total} · 완료: {completed}개 · 진행률: {percent:.1f}%\n"
+                    f"경과 시간: {elapsed_text} · 예상 남은 시간: {eta_text}\n"
+                    f"GPU: {data.get('gpu', '확인 중')} · 현재 상태: {data.get('status', '')}"
+                    + (f"\n{warning}" if warning else ""))
+                if warning and warning != getattr(self, "_last_convert_warning", ""):
+                    self.log.appendPlainText(warning)
+                    self._last_convert_warning = warning
+                self.statusBar().showMessage(f"음색 변환 {percent:.1f}% · {completed}/{total} · ETA {eta_text}")
+            except (KeyError, TypeError, ValueError):
+                self.log.appendPlainText(message)
+            return
         self.statusBar().showMessage(message)
         self.log.appendPlainText(message)
         if self._active_stage == "train":
@@ -1173,6 +1238,7 @@ class Studio(QMainWindow):
         self.progress.setValue(current)
 
     def _done(self, stage: str, result: str):
+        self.cancel_button.setEnabled(False)
         self.progress.setRange(0, 1)
         self.progress.setValue(1)
         self.log.appendPlainText(f"✓ {result}")
@@ -1181,10 +1247,15 @@ class Studio(QMainWindow):
         self.statusBar().showMessage(f"{LABELS[stage]} 완료", 5000)
 
     def _failed(self, stage: str, error: str):
+        self.cancel_button.setEnabled(False)
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.log.appendPlainText(error)
         self.project = Project.load(self.project.path)
+        if stage in ("convert", "all"):
+            detail = self.project.stages.get("convert", {}).get("message") or next(
+                (line for line in reversed(error.splitlines()) if line.strip()), "변환 실패")
+            self.convert_status.setText(f"음색 변환 실패 또는 중단\n{detail[:500]}\nlogs 폴더에서 자세한 기록을 확인하세요.")
         self._refresh()
         self.statusBar().showMessage(f"{LABELS[stage]} 실패 — logs/app.log 확인", 10000)
 
