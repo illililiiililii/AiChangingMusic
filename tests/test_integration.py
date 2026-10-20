@@ -13,6 +13,8 @@ import soundfile as sf
 
 from app.core.pipeline import run_stage
 from app.core.project import Project
+from app.core.stage_process import run_stage_process
+from app.audio_processing.io import waveform
 from app.lyric_generation.alignment import align
 from app.music_analysis.syllables import estimate_syllables
 from app.music_analysis.midi_io import read_midi, write_midi, monophonic_draft
@@ -22,6 +24,23 @@ from scripts.render_korean_singing import SAMPLE_RATE, score_lines, trim_tts_sil
 
 
 class IntegrationTest(unittest.TestCase):
+    def test_stage_process_failure_keeps_parent_alive_and_marks_project(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Project(path=Path(temporary) / "project.json")
+            project.save()
+            with self.assertRaisesRegex(RuntimeError, "하위 프로세스 종료"):
+                run_stage_process(project.path, "analyze")
+            self.assertEqual(Project.load(project.path).stages["analyze"]["status"], "실패")
+
+    def test_waveform_reads_bounded_blocks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "tone.wav"
+            sf.write(path, np.ones((44100, 2), dtype="float32") * .25, 44100)
+            values, duration = waveform(path, points=100)
+            self.assertEqual(len(values), 100)
+            self.assertAlmostEqual(duration, 1.)
+            self.assertAlmostEqual(float(values.max()), .25, places=2)
+
     def test_midi_round_trip_uses_selected_bpm_and_seconds(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "melody.mid"

@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from app.audio_processing.io import waveform
 from app.core.project import Project, STAGES
-from app.core.activity_log import LOG_DIR
+from app.core.activity_log import LOG_DIR, record
 from app.core.settings import ROOT, recent_projects, remember
 from app.gui.piano_roll import PianoRollDialog
 from app.music_analysis.midi_io import read_midi, write_midi
@@ -72,8 +72,8 @@ class Waveform(QWidget):
 
 
 class StageWorker(QObject):
-    finished = Signal(str)
-    failed = Signal(str)
+    finished = Signal(str, str)
+    failed = Signal(str, str)
     progress = Signal(str)
     stage_progress = Signal(int, int)
 
@@ -83,7 +83,7 @@ class StageWorker(QObject):
 
     def run(self):
         try:
-            from app.core.pipeline import run_stage
+            from app.core.stage_process import run_stage_process
             if self.stage == "all":
                 project = Project.load(self.path)
                 stages = ["import", "separate"]
@@ -105,7 +105,7 @@ class StageWorker(QObject):
                           (stage in expected and not project.artifact(expected[stage]).is_file())]
                 for index, stage in enumerate(stages, 1):
                     self.progress.emit(f"[{index}/{len(stages)}] {LABELS[stage]}")
-                    run_stage(self.path, stage, self.progress.emit)
+                    run_stage_process(self.path, stage, self.progress.emit)
                     self.stage_progress.emit(index, len(stages))
                 result = "전체 처리 완료: final.wav, final.mp3"
             else:
@@ -114,18 +114,18 @@ class StageWorker(QObject):
                     if (project.stages.get("import", {}).get("status") != "완료"
                             or not project.artifact("source.wav").is_file()):
                         self.progress.emit("선행 작업: 원곡 가져오기")
-                        run_stage(self.path, "import", self.progress.emit)
+                        run_stage_process(self.path, "import", self.progress.emit)
                 if self.stage in ("transcribe", "analyze", "basic_pitch"):
                     project = Project.load(self.path)
                     if (project.stages.get("separate", {}).get("status") != "완료"
                             or not project.artifact("vocals.wav").is_file()):
                         self.progress.emit("선행 작업: 보컬·반주 분리")
-                        run_stage(self.path, "separate", self.progress.emit)
+                        run_stage_process(self.path, "separate", self.progress.emit)
                 self.progress.emit(f"{LABELS[self.stage]} 실행 중")
-                result = run_stage(self.path, self.stage, self.progress.emit)
-            self.finished.emit(result)
+                result = run_stage_process(self.path, self.stage, self.progress.emit)
+            self.finished.emit(self.stage, result)
         except Exception:
-            self.failed.emit(traceback.format_exc())
+            self.failed.emit(self.stage, traceback.format_exc())
 
 
 class Studio(QMainWindow):
@@ -699,6 +699,9 @@ class Studio(QMainWindow):
         self.project.segment_end = self.segment_end.value()
 
     def new_project(self):
+        if self._active_stage is not None:
+            self.statusBar().showMessage("진행 중인 작업이 끝난 뒤 프로젝트를 바꿔 주세요", 5000)
+            return
         if self.recorder and self.recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
             QMessageBox.warning(self, "녹음 중", "녹음을 중지한 뒤 프로젝트를 바꿔 주세요.")
             return
@@ -723,6 +726,9 @@ class Studio(QMainWindow):
             self.load_project(Path(path))
 
     def load_project(self, path: Path):
+        if self._active_stage is not None:
+            self.statusBar().showMessage("진행 중인 작업이 끝난 뒤 프로젝트를 바꿔 주세요", 5000)
+            return
         if self.recorder and self.recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
             QMessageBox.warning(self, "녹음 중", "녹음을 중지한 뒤 프로젝트를 바꿔 주세요.")
             return
@@ -1063,7 +1069,7 @@ class Studio(QMainWindow):
         QTimer.singleShot(round((self.segment_end.value() - self.segment_start.value()) * 1000), self.player.pause)
 
     def run(self, stage: str):
-        if self.thread and self.thread.isRunning():
+        if self._active_stage is not None:
             self.statusBar().showMessage("진행 중인 작업이 끝날 때까지 기다려 주세요", 4000)
             return
         if self.project.path is None:
@@ -1077,6 +1083,7 @@ class Studio(QMainWindow):
                 return
         self._sync()
         self.project.save()
+        record("gui", "작업 요청", f"{stage}: {self.project.path}")
         self.progress.setRange(0, 0)
         self.log.appendPlainText(f"▶ {LABELS[stage]}")
         if stage == "train":
@@ -1103,17 +1110,17 @@ class Studio(QMainWindow):
         self.thread.finished.connect(self.thread.deleteLater)
         self.thread.start()
 
-    @Slot(str)
-    def _done_result(self, result: str):
-        if self._active_stage == "train":
+    @Slot(str, str)
+    def _done_result(self, stage: str, result: str):
+        if stage == "train":
             self._finish_train_status(True)
-        self._done(self._active_stage, result)
+        self._done(stage, result)
 
-    @Slot(str)
-    def _failed_result(self, error: str):
-        if self._active_stage == "train":
+    @Slot(str, str)
+    def _failed_result(self, stage: str, error: str):
+        if stage == "train":
             self._finish_train_status(False)
-        self._failed(self._active_stage, error)
+        self._failed(stage, error)
 
     @Slot(str)
     def _show_progress(self, message: str):
@@ -1152,6 +1159,14 @@ class Studio(QMainWindow):
         self.thread = None
         self.worker = None
         self._active_stage = None
+
+    def closeEvent(self, event):
+        if self._active_stage is not None:
+            event.ignore()
+            self.statusBar().showMessage("진행 중인 작업이 끝난 뒤 앱을 닫을 수 있습니다", 8000)
+            return
+        self.player.stop()
+        super().closeEvent(event)
 
     def _stage_tick(self, current: int, total: int):
         self.progress.setRange(0, total)

@@ -45,8 +45,9 @@ def decode(source: Path, target: Path, sample_rate: int = 44100, channels: int =
 
 def waveform(path: Path, points: int = 1600) -> tuple[np.ndarray, float]:
     info = sf.info(path)
-    samples, _ = sf.read(path, dtype="float32", always_2d=True)
-    mono = np.mean(samples, axis=1)
-    block = max(1, int(np.ceil(len(mono) / points)))
-    values = np.array([np.max(np.abs(mono[i:i + block])) for i in range(0, len(mono), block)], dtype=np.float32)
+    block = max(1, int(np.ceil(info.frames / points)))
+    values = np.fromiter(
+        (float(np.max(np.abs(chunk))) for chunk in sf.blocks(path, blocksize=block, dtype="float32", always_2d=True)),
+        dtype=np.float32,
+    )
     return values, info.duration
